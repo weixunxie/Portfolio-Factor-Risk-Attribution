@@ -1,0 +1,3 @@
+period,start,end,portfolio_cumulative_return,portfolio_max_drawdown,worst_contributor_1,worst_contributor_2,worst_contributor_3
+COVID Crash,2020-02-19,2020-03-23,-0.2884,-0.3148,NVDA,TSLA,AAPL
+2022 Rate-Hike Selloff,2022-01-03,2022-10-14,-0.4089,-0.423,NVDA,META,MSFT
