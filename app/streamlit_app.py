@@ -33,9 +33,10 @@ def pct(val):
 def fmt_risk_summary(df):
     """Round and format the risk summary table for display."""
     df = df.copy()
-    pct_metrics = {"Annualized Return", "Annualized Volatility", "Max Drawdown", "Sharpe Ratio"}
-    for _, row in df.iterrows():
-        pass  # formatting done below
+    pct_metrics = {
+        "Annualized Return", "Annualized Volatility", "Max Drawdown",
+        "VaR 95%", "CVaR 95%", "VaR 99%", "CVaR 99%",
+    }
     df["Value"] = df.apply(
         lambda r: pct(r["Value"]) if r["Metric"] in pct_metrics else round(float(r["Value"]), 4),
         axis=1,
@@ -80,7 +81,7 @@ if risk_df is not None:
         display_df = fmt_risk_summary(risk_df)
     except Exception:
         display_df = risk_df
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 else:
     st.warning("risk_summary.csv not found. Run the pipeline first.")
 
@@ -93,7 +94,7 @@ st.header("Correlation Matrix")
 corr_df = load_csv("outputs/tables/correlation_matrix.csv", index_col=0)
 if corr_df is not None:
     st.dataframe(corr_df.style.format("{:.2f}").background_gradient(cmap="RdYlGn", vmin=-1, vmax=1),
-                 use_container_width=True)
+                 width="stretch")
 else:
     st.warning("correlation_matrix.csv not found.")
 
@@ -111,7 +112,7 @@ if contrib_df is not None:
         "weight_volatility_contribution": "{:.4f}",
         "correlation_with_portfolio": "{:.4f}",
         "average_return_on_worst_5_days": "{:.2%}",
-    }), use_container_width=True)
+    }), width="stretch")
 
     # Automatic interpretation
     top_wv = contrib_df["weight_volatility_contribution"].idxmax()
@@ -135,7 +136,7 @@ if stress_df is not None:
     display_stress = stress_df.copy()
     for col in ["portfolio_cumulative_return", "portfolio_max_drawdown"]:
         display_stress[col] = display_stress[col].apply(pct)
-    st.dataframe(display_stress, use_container_width=True, hide_index=True)
+    st.dataframe(display_stress, width="stretch", hide_index=True)
 else:
     st.warning("stress_summary.csv not found.")
 
@@ -147,14 +148,14 @@ rate_chart = Path("outputs/charts/rate_hike_stress_cumulative_return.png")
 with col1:
     st.subheader("COVID Crash (Feb–Mar 2020)")
     if covid_chart.exists():
-        st.image(str(covid_chart), use_container_width=True)
+        st.image(str(covid_chart), width="stretch")
     else:
         st.warning("COVID chart not found.")
 
 with col2:
     st.subheader("2022 Rate-Hike Selloff (Jan–Oct 2022)")
     if rate_chart.exists():
-        st.image(str(rate_chart), use_container_width=True)
+        st.image(str(rate_chart), width="stretch")
     else:
         st.warning("Rate-hike chart not found.")
 
@@ -175,11 +176,26 @@ if stress_assets_df is not None:
                 "asset_cumulative_return": "{:.2%}",
                 "weighted_contribution": "{:.4f}",
             }),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 else:
     st.warning("stress_asset_contributions.csv not found.")
+
+# ---------------------------------------------------------------------------
+# AI-Style Risk Memo
+# ---------------------------------------------------------------------------
+
+st.header("AI-Style Risk Memo")
+
+memo_path = Path("outputs/sample_memo.md")
+if memo_path.exists():
+    st.markdown(memo_path.read_text())
+else:
+    st.warning(
+        "Risk memo has not been generated yet. "
+        "Please run `python src/memo_generator.py` first."
+    )
 
 # ---------------------------------------------------------------------------
 # Disclaimer
