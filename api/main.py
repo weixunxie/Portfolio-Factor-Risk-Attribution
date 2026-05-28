@@ -34,8 +34,12 @@ _default_origins = [
     "http://localhost:5173",
 ]
 _env_origin = os.environ.get("FRONTEND_ORIGIN", "")
-_extra = [o.strip() for o in _env_origin.split(",") if o.strip()]
-ALLOWED_ORIGINS = list(dict.fromkeys(_default_origins + _extra))
+# Setting FRONTEND_ORIGIN=* in Railway allows any origin (fine for a public research tool)
+if _env_origin.strip() == "*":
+    ALLOWED_ORIGINS: list[str] = ["*"]
+else:
+    _extra = [o.strip() for o in _env_origin.split(",") if o.strip()]
+    ALLOWED_ORIGINS = list(dict.fromkeys(_default_origins + _extra))
 # ──────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Portfolio Risk API", version="2.0.0")
@@ -43,6 +47,7 @@ app = FastAPI(title="Portfolio Risk API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=ALLOWED_ORIGINS != ["*"],  # credentials incompatible with wildcard
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
@@ -60,6 +65,18 @@ def _read_markdown(path: Path) -> str:
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {path.name}")
     return path.read_text(encoding="utf-8")
+
+
+# ── root ───────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def root():
+    return {
+        "name": "Portfolio Risk API",
+        "version": "2.0.0",
+        "status": "ok",
+        "endpoints": ["/health", "/analyze-portfolio", "/generate-risk-summary"],
+    }
 
 
 # ── static MVP endpoints (unchanged) ──────────────────────────────────────────
