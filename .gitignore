@@ -27,6 +27,7 @@ frontend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/.env.local
+frontend/.env          # never commit real frontend secrets
 
 # Provider cache (local API response cache — never commit)
 data/cache/

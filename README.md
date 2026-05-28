@@ -240,16 +240,66 @@ npm run dev
 
 ## Deployment
 
-### Backend — Railway or Render
+This is a monorepo. The backend and frontend are deployed to separate services.
+
+```
+Backend  →  Railway   (FastAPI, repo root)
+Frontend →  Vercel    (Next.js, /frontend directory)
+```
+
+---
+
+### Quick checklist
+
+**Backend (Railway)**
+- [ ] Connect GitHub repo to Railway
+- [ ] Set root directory to repo root (default)
+- [ ] Set start command: `uvicorn api.main:app --host 0.0.0.0 --port $PORT`
+- [ ] Add all backend environment variables (see table below)
+- [ ] Confirm `GET /health` returns `{"status":"ok"}`
+
+**Frontend (Vercel)**
+- [ ] Import same GitHub repo into Vercel
+- [ ] Set root directory to `frontend`
+- [ ] Add `NEXT_PUBLIC_API_BASE_URL` pointing to the Railway backend URL
+- [ ] Deploy and test Analyze Portfolio from the live URL
+
+---
+
+### Backend — Railway
 
 | Setting | Value |
 |---|---|
-| Root directory | *(repo root)* |
+| Root directory | *(repo root — default)* |
 | Build command | `pip install -r requirements.txt` |
 | Start command | `uvicorn api.main:app --host 0.0.0.0 --port $PORT` |
+| Watch paths | *(default)* |
 
-Required environment variables: see section above. The `DATABASE_URL` must use a direct connection
-(port 5432), not the Supabase connection pooler (port 6543), unless `NullPool` is configured.
+**Required Railway environment variables:**
+
+| Variable | Example / Notes |
+|---|---|
+| `DATABASE_URL` | Supabase pooler URL (port 6543) — NullPool is configured |
+| `QDRANT_URL` | Your Qdrant cloud instance URL |
+| `QDRANT_API_KEY` | Qdrant API key |
+| `QDRANT_COLLECTION_NAME` | `company_risk_documents` |
+| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage free or premium key |
+| `SEC_USER_AGENT` | `"Your Name your.email@example.com"` (required by SEC EDGAR) |
+| `OPENAI_API_KEY` | OpenAI key for AI risk summary |
+| `OPENAI_MODEL` | `gpt-4o-mini` (default) |
+| `FRONTEND_ORIGIN` | Your Vercel URL, e.g. `https://your-app.vercel.app` — or `*` to allow all origins |
+
+Copy `.env.example` as a reference. Do not commit `.env`.
+
+**Health check URLs** (replace with your Railway domain):
+
+```
+GET https://your-backend.up.railway.app/             → API info
+GET https://your-backend.up.railway.app/health       → {"status":"ok"}
+GET https://your-backend.up.railway.app/ai-summary-status  → OpenAI config check
+```
+
+---
 
 ### Frontend — Vercel
 
@@ -257,14 +307,40 @@ Required environment variables: see section above. The `DATABASE_URL` must use a
 |---|---|
 | Root directory | `frontend` |
 | Framework preset | Next.js (auto-detected) |
+| Build command | `npm run build` |
+| Install command | `npm install` |
+| Output directory | *(Next.js default)* |
 
-Required environment variable:
+**Required Vercel environment variable:**
 
+| Variable | Value |
+|---|---|
+| `NEXT_PUBLIC_API_BASE_URL` | `https://your-backend.up.railway.app` (no trailing slash) |
+
+> **Important:** Do NOT add backend secrets to Vercel.
+> Never set `DATABASE_URL`, `OPENAI_API_KEY`, `QDRANT_API_KEY`, or `ALPHA_VANTAGE_API_KEY`
+> as Vercel environment variables. Those belong on Railway only.
+
+Copy `frontend/.env.example` to `frontend/.env.local` for local development.
+
+---
+
+### Local development
+
+```bash
+# Terminal 1 — backend
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2 — frontend
+cd frontend
+npm install
+npm run dev          # http://localhost:3002
 ```
-NEXT_PUBLIC_API_BASE_URL=https://your-railway-or-render-backend.up.railway.app
-```
 
-After deploying the frontend, set `FRONTEND_ORIGIN` on the backend to the Vercel URL.
+The frontend reads `NEXT_PUBLIC_API_BASE_URL` from `frontend/.env.local`.
+Default fallback is `http://127.0.0.1:8000`.
+
+After deploying the frontend to Vercel, set `FRONTEND_ORIGIN` on the Railway backend to your Vercel URL so CORS allows requests from the live frontend.
 
 ---
 
