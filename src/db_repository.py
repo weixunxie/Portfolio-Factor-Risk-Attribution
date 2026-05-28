@@ -11,6 +11,15 @@ Design rules
 - Python None → SQL NULL for all nullable columns.
 - Ticker values are always normalised to uppercase.
 - No secrets are logged.
+
+Schema alignment notes
+----------------------
+- portfolios.portfolio_id   (not 'id')
+- analysis_runs.analysis_id (not 'id')
+- sec_filings.filing_id     (not 'id')
+- companies: market_cap / pe_ratio / week_52_high / week_52_low are NUMERIC
+- api_cache_metadata: uses 'provider' (not 'source'), 'local_path' (not 'cache_file_path')
+- portfolio_holdings has FK → companies(ticker): companies must be upserted first
 """
 
 from __future__ import annotations
@@ -39,7 +48,23 @@ def _str(v: Any) -> str | None:
     if v is None:
         return None
     s = str(v).strip()
-    return None if s in ("", "None", "null") else s
+    return None if s in ("", "None", "null", "N/A", "n/a", "-") else s
+
+
+def _num(v: Any) -> float | None:
+    """
+    Safely convert a value to float for NUMERIC columns.
+    Returns None for blank / non-numeric strings so PostgreSQL stores NULL.
+    """
+    if v is None:
+        return None
+    try:
+        s = str(v).strip().replace(",", "")
+        if s in ("", "None", "null", "N/A", "n/a", "-"):
+            return None
+        return float(s)
+    except (ValueError, TypeError):
+        return None
 
 
 def _text_hash(text_: str) -> str:
@@ -56,6 +81,9 @@ def upsert_company(company: dict[str, Any]) -> None:
         ticker, name, sector, industry, exchange, currency,
         market_cap, pe_ratio, week_52_high, week_52_low,
         description (→ business_summary), source (→ data_source)
+
+    market_cap / pe_ratio / week_52_high / week_52_low are stored as NUMERIC —
+    non-numeric strings (e.g. "N/A") are silently converted to NULL.
     """
     ticker = (company.get("ticker") or "").upper().strip()
     if not ticker:
@@ -68,10 +96,10 @@ def upsert_company(company: dict[str, Any]) -> None:
         "industry":         _str(company.get("industry")),
         "exchange":         _str(company.get("exchange")),
         "currency":         _str(company.get("currency")),
-        "market_cap":       _str(company.get("market_cap")),
-        "pe_ratio":         _str(company.get("pe_ratio")),
-        "week_52_high":     _str(company.get("week_52_high")),
-        "week_52_low":      _str(company.get("week_52_low")),
+        "market_cap":       _num(company.get("market_cap")),
+        "pe_ratio":         _num(company.get("pe_ratio")),
+        "week_52_high":     _num(company.get("week_52_high")),
+        "week_52_low":      _num(company.get("week_52_low")),
         "business_summary": _str(company.get("description")),
         "data_source":      _str(company.get("source")),
     }
@@ -117,7 +145,7 @@ def create_portfolio(
         row = conn.execute(text("""
             INSERT INTO portfolios (portfolio_name, description, portfolio_goal, created_at)
             VALUES (:portfolio_name, :description, :portfolio_goal, NOW())
-            RETURNING id
+            RETURNING portfolio_id
         """), {
             "portfolio_name": portfolio_name,
             "description":    description,
@@ -139,6 +167,10 @@ def upsert_portfolio_holdings(
     Upsert portfolio holdings.
     Conflict key: (portfolio_id, ticker).
     Each item in *holdings* must have 'ticker' and 'weight'.
+
+    NOTE: companies(ticker) must already exist before calling this function
+    because portfolio_holdings has a foreign key to companies.
+    Call upsert_company() for each ticker first.
     """
     if not holdings:
         return
@@ -164,17 +196,25 @@ def upsert_portfolio_holdings(
 def insert_sec_filing(metadata: dict[str, Any]) -> str | None:
     """
     Insert or update a row in *sec_filings* keyed on accession_number.
-    Returns the row's UUID (id) or None if accession_number is missing.
+    Returns the row's UUID (filing_id) or None if accession_number is missing.
 
-    Required key: accession_number
+    NOTE: companies(ticker) must already exist before calling this function
+    because sec_filings has a foreign key to companies.
     """
     accession = _str(metadata.get("accession_number"))
     if not accession:
         raise ValueError("insert_sec_filing: 'accession_number' is required")
 
+    ticker = (metadata.get("ticker") or "").upper().strip() or None
+    if not ticker:
+        raise ValueError("insert_sec_filing: 'ticker' is required")
+
+    # Ensure cik is not None/empty — use a placeholder if missing
+    cik = _str(metadata.get("cik")) or "unknown"
+
     params = {
-        "ticker":               (metadata.get("ticker") or "").upper().strip() or None,
-        "cik":                  _str(metadata.get("cik")),
+        "ticker":               ticker,
+        "cik":                  cik,
         "filing_type":          _str(metadata.get("filing_type")) or "10-K",
         "filing_date":          _str(metadata.get("filing_date")),
         "accession_number":     accession,
@@ -206,7 +246,7 @@ def insert_sec_filing(metadata: dict[str, Any]) -> str | None:
                 risk_factors_path     = EXCLUDED.risk_factors_path,
                 risk_factors_extracted = EXCLUDED.risk_factors_extracted,
                 qdrant_ingested       = EXCLUDED.qdrant_ingested
-            RETURNING id
+            RETURNING filing_id
         """), params).fetchone()
 
     filing_id = str(row[0]) if row else None
@@ -254,7 +294,7 @@ def insert_analysis_run(
     status: str = "completed",
     error_message: str | None = None,
 ) -> str:
-    """Insert one analysis run and return its UUID (str)."""
+    """Insert one analysis run and return its UUID (analysis_id)."""
     start_date = _str(risk_metrics.get("data_start"))
     end_date   = _str(risk_metrics.get("data_end"))
 
@@ -291,20 +331,20 @@ def insert_analysis_run(
                 created_at
             ) VALUES (
                 :portfolio_id,
-                :request_holdings_json::jsonb,
+                CAST(:request_holdings_json AS jsonb),
                 :start_date,
                 :end_date,
-                :risk_metrics_json::jsonb,
-                :correlation_matrix_json::jsonb,
-                :top_risk_contributors_json::jsonb,
-                :stress_analysis_json::jsonb,
-                :company_risk_evidence_json::jsonb,
-                :warnings_json::jsonb,
+                CAST(:risk_metrics_json AS jsonb),
+                CAST(:correlation_matrix_json AS jsonb),
+                CAST(:top_risk_contributors_json AS jsonb),
+                CAST(:stress_analysis_json AS jsonb),
+                CAST(:company_risk_evidence_json AS jsonb),
+                CAST(:warnings_json AS jsonb),
                 :status,
                 :error_message,
                 NOW()
             )
-            RETURNING id
+            RETURNING analysis_id
         """), params).fetchone()
 
     analysis_id = str(row[0])
@@ -429,44 +469,115 @@ def insert_rag_documents_bulk(records: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
+# ── read helpers ──────────────────────────────────────────────────────────────
+
+def get_company_from_db(ticker: str) -> "dict | None":
+    """
+    Read a company profile row from *companies*.
+    Returns None if the ticker is not found.
+    Includes 'last_updated' as a Python datetime so callers can enforce TTL.
+    """
+    t = ticker.upper().strip()
+    with get_db_session() as conn:
+        row = conn.execute(text("""
+            SELECT ticker, company_name, sector, industry, exchange, currency,
+                   market_cap, pe_ratio, week_52_high, week_52_low,
+                   business_summary, data_source, last_updated
+            FROM companies
+            WHERE ticker = :ticker
+        """), {"ticker": t}).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "ticker":       row[0],
+        "name":         row[1] or "",
+        "sector":       row[2] or "",
+        "industry":     row[3] or "",
+        "exchange":     row[4] or "",
+        "currency":     row[5] or "",
+        "market_cap":   str(row[6]) if row[6] is not None else "",
+        "pe_ratio":     str(row[7]) if row[7] is not None else "",
+        "week_52_high": str(row[8]) if row[8] is not None else "",
+        "week_52_low":  str(row[9]) if row[9] is not None else "",
+        "description":  row[10] or "",
+        "source":       row[11] or "database",
+        "last_updated": row[12],   # datetime | None — caller checks TTL
+    }
+
+
+def get_sec_filing_from_db(ticker: str, filing_type: str = "10-K") -> "dict | None":
+    """
+    Return the most-recent *sec_filings* row where risk_factors_extracted=TRUE.
+    Returns None if not found or DB is unavailable.
+    """
+    t = ticker.upper().strip()
+    with get_db_session() as conn:
+        row = conn.execute(text("""
+            SELECT accession_number, filing_date, source_url,
+                   risk_factors_path, qdrant_ingested, cik
+            FROM sec_filings
+            WHERE ticker       = :ticker
+              AND filing_type  = :filing_type
+              AND risk_factors_extracted = TRUE
+            ORDER BY filing_date DESC NULLS LAST
+            LIMIT 1
+        """), {"ticker": t, "filing_type": filing_type}).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "accession_number": row[0],
+        "filing_date":      str(row[1]) if row[1] else None,
+        "source_url":       row[2],
+        "risk_factors_path": row[3],
+        "qdrant_ingested":  bool(row[4]),
+        "cik":              row[5],
+    }
+
+
 # ── H. api_cache_metadata ──────────────────────────────────────────────────────
 
 def insert_api_cache_metadata(metadata: dict[str, Any]) -> None:
     """
     Insert or update a row in *api_cache_metadata* keyed on cache_key.
+
+    Schema columns: cache_key, provider (NOT NULL), endpoint, ticker,
+                    local_path, fetched_at, expires_at, status, error_message.
     """
     cache_key = _str(metadata.get("cache_key"))
     if not cache_key:
         raise ValueError("insert_api_cache_metadata: 'cache_key' is required")
 
+    # 'source' and 'provider' are both accepted as the provider name
+    provider = _str(metadata.get("provider") or metadata.get("source")) or "unknown"
+
     with get_db_session() as conn:
         conn.execute(text("""
             INSERT INTO api_cache_metadata (
-                cache_key, source, ticker, endpoint, ttl_seconds,
-                fetched_at, expires_at, cache_file_path, notes
+                cache_key, provider, ticker, endpoint,
+                fetched_at, expires_at, local_path
             ) VALUES (
-                :cache_key, :source, :ticker, :endpoint, :ttl_seconds,
-                :fetched_at, :expires_at, :cache_file_path, :notes
+                :cache_key, :provider, :ticker, :endpoint,
+                :fetched_at, :expires_at, :local_path
             )
             ON CONFLICT (cache_key) DO UPDATE SET
-                source          = EXCLUDED.source,
-                ticker          = EXCLUDED.ticker,
-                endpoint        = EXCLUDED.endpoint,
-                ttl_seconds     = EXCLUDED.ttl_seconds,
-                fetched_at      = EXCLUDED.fetched_at,
-                expires_at      = EXCLUDED.expires_at,
-                cache_file_path = EXCLUDED.cache_file_path,
-                notes           = EXCLUDED.notes
+                provider    = EXCLUDED.provider,
+                ticker      = EXCLUDED.ticker,
+                endpoint    = EXCLUDED.endpoint,
+                fetched_at  = EXCLUDED.fetched_at,
+                expires_at  = EXCLUDED.expires_at,
+                local_path  = EXCLUDED.local_path
         """), {
-            "cache_key":       cache_key,
-            "source":          _str(metadata.get("source")),
-            "ticker":          (metadata.get("ticker") or "").upper().strip() or None,
-            "endpoint":        _str(metadata.get("endpoint")),
-            "ttl_seconds":     metadata.get("ttl_seconds"),
-            "fetched_at":      _str(metadata.get("fetched_at")),
-            "expires_at":      _str(metadata.get("expires_at")),
-            "cache_file_path": _str(metadata.get("cache_file_path")),
-            "notes":           _str(metadata.get("notes")),
+            "cache_key":  cache_key,
+            "provider":   provider,
+            "ticker":     (metadata.get("ticker") or "").upper().strip() or None,
+            "endpoint":   _str(metadata.get("endpoint")),
+            "fetched_at": _str(metadata.get("fetched_at")),
+            "expires_at": _str(metadata.get("expires_at")),
+            "local_path": _str(metadata.get("cache_file_path") or metadata.get("local_path")),
         })
 
     logger.info("insert_api_cache_metadata: %s", cache_key)

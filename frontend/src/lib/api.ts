@@ -1,8 +1,6 @@
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-// ── transport ──────────────────────────────────────────────────────────────────
-
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) throw new Error(`${path} → ${res.status} ${res.statusText}`);
@@ -22,102 +20,15 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-// ── static MVP types ───────────────────────────────────────────────────────────
+// ── Core types ────────────────────────────────────────────────────────────────
 
-export interface RiskSummaryRow {
-  Metric: string;
-  Value: number;
-}
-
-export interface TopRiskContributor {
-  "": string;
-  weight: number;
-  annualized_volatility: number;
-  weight_volatility_contribution: number;
-  correlation_with_portfolio: number;
-  average_return_on_worst_5_days: number;
-  rank_by_wv_contribution: number;
-  rank_by_correlation: number;
-  rank_by_worst_day_loss: number;
-}
-
-export interface StressSummaryRow {
-  period: string;
-  start: string;
-  end: string;
-  portfolio_cumulative_return: number;
-  portfolio_max_drawdown: number;
-  worst_contributor_1: string;
-  worst_contributor_2: string;
-  worst_contributor_3: string;
-}
-
-export interface StressAssetContribution {
-  period: string;
-  asset: string;
-  weight: number;
-  asset_cumulative_return: number;
-  weighted_contribution: number;
-}
-
-export interface MarkdownResponse {
-  markdown: string;
-}
-
-// ── dynamic types ──────────────────────────────────────────────────────────────
-
-export interface CompanyProfile {
-  ticker: string;
-  name: string;
-  exchange: string;
-  sector: string;
-  industry: string;
-  description: string;
-  currency: string;
-  market_cap: string;
-  pe_ratio: string;
-  week_52_high: string;
-  week_52_low: string;
-  dividend_yield: string;
-  source: string | null;
-  cached: boolean;
-  error: string | null;
-}
-
-export interface SecRiskFactorsResponse {
-  success: boolean;
-  ticker: string;
-  cik: number | null;
-  filing_date: string | null;
-  accession_number: string | null;
-  source_url: string | null;
-  preview: string | null;
-  output_path: string | null;
-  cached: boolean;
-  error: string | null;
-}
-
-export interface RiskQueryHit {
-  ticker: string;
-  source_file: string;
-  source_type: string;
-  filing_date: string;
-  accession_number: string;
-  chunk_id: string;
-  text: string;
-  score: number;
-}
-
-export interface RiskQueryResponse {
-  ticker: string;
-  query: string;
-  top_k: number;
-  results: RiskQueryHit[];
-}
+export type InputMode = "weights" | "amounts" | "shares";
 
 export interface HoldingInput {
   ticker: string;
-  weight: number;
+  weight?: number;  // input_mode="weights"
+  amount?: number;  // input_mode="amounts"
+  shares?: number;  // input_mode="shares"
 }
 
 export interface EnrichedHolding {
@@ -134,41 +45,102 @@ export interface EnrichedHolding {
     week_52_high: string;
     week_52_low: string;
     source: string;
+    profile_error?: string | null;
   };
 }
+
+export interface RiskMetrics {
+  annualized_return: number;
+  annualized_volatility: number;
+  sharpe_ratio: number;
+  max_drawdown: number;
+  var_95: number;
+  cvar_95: number;
+  var_99: number;
+  cvar_99: number;
+  trading_days_used: number;
+  data_start: string;
+  data_end: string;
+}
+
+export interface RiskContributor {
+  ticker: string;
+  weight: number;
+  annualized_volatility: number;
+  weight_volatility_contribution: number;
+  correlation_with_portfolio: number;
+  average_return_on_worst_5_portfolio_days: number;
+}
+
+export interface WorstContributor {
+  ticker: string;
+  contribution: number;
+}
+
+export interface StressPeriodResult {
+  name: string;
+  start: string;
+  end: string;
+  portfolio_cumulative_return: number;
+  portfolio_max_drawdown: number;
+  worst_contributors: WorstContributor[];
+  asset_data_available: boolean;
+}
+
+export interface RiskEvidenceHit {
+  ticker: string;
+  source_file: string;
+  source_type: string;
+  filing_date: string;
+  accession_number: string;
+  chunk_id: string;
+  text: string;
+  score: number;
+}
+
+export type RiskEvidenceEntry = RiskEvidenceHit[] | { message: string };
 
 export interface AnalyzePortfolioResponse {
   holdings: EnrichedHolding[];
   total_weight: number;
   total_weight_pct: string;
   dynamic_risk_metrics_status: string;
-  dynamic_risk_metrics_note: string;
+  risk_metrics: RiskMetrics;
+  correlation_matrix: Record<string, Record<string, number>>;
+  top_risk_contributors: RiskContributor[];
+  stress_analysis: StressPeriodResult[];
+  company_risk_evidence: Record<string, RiskEvidenceEntry>;
+  failed_tickers: string[];
+  warnings: string[];
+  portfolio_id: string | null;
+  analysis_id: string | null;
   disclaimer: string;
 }
 
-// ── static MVP API calls ───────────────────────────────────────────────────────
+// ── API calls ─────────────────────────────────────────────────────────────────
 
-export const fetchRiskSummary = () => get<RiskSummaryRow[]>("/risk-summary");
-export const fetchTopRiskContributors = () => get<TopRiskContributor[]>("/top-risk-contributors");
-export const fetchStressSummary = () => get<StressSummaryRow[]>("/stress-summary");
-export const fetchStressAssetContributions = () => get<StressAssetContribution[]>("/stress-asset-contributions");
+export const analyzePortfolio = (
+  holdings: HoldingInput[],
+  opts?: {
+    input_mode?: InputMode;
+    total_portfolio_value?: number;
+    treat_unallocated_as_cash?: boolean;
+    portfolio_name?: string;
+    portfolio_goal?: string;
+    save_to_database?: boolean;
+  }
+) =>
+  post<AnalyzePortfolioResponse>("/analyze-portfolio", {
+    holdings,
+    input_mode: "weights",
+    save_to_database: true,
+    ...opts,
+  });
+
+// Static endpoints kept for backward compatibility
+export interface MarkdownResponse {
+  markdown: string;
+}
 export const fetchRiskMemo = () => get<MarkdownResponse>("/risk-memo");
-export const fetchCompanyRiskEvidence = () => get<MarkdownResponse>("/company-risk-evidence");
-
-// ── dynamic API calls ──────────────────────────────────────────────────────────
-
-export const fetchCompanyProfile = (ticker: string) =>
-  get<CompanyProfile>(`/company-profile/${encodeURIComponent(ticker)}`);
-
-export const fetchSecRiskFactors = (ticker: string, force = false) =>
-  get<SecRiskFactorsResponse>(
-    `/sec-risk-factors/${encodeURIComponent(ticker)}${force ? "?force=true" : ""}`
-  );
-
-export const queryCompanyRisk = (ticker: string, query: string, top_k = 5) =>
-  get<RiskQueryResponse>(
-    `/company-risk-query?ticker=${encodeURIComponent(ticker)}&query=${encodeURIComponent(query)}&top_k=${top_k}`
-  );
-
-export const analyzePortfolio = (holdings: HoldingInput[]) =>
-  post<AnalyzePortfolioResponse>("/analyze-portfolio", { holdings });
+export const fetchCompanyRiskEvidence = () =>
+  get<MarkdownResponse>("/company-risk-evidence");

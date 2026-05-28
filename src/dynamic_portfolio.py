@@ -43,6 +43,9 @@ _PRICE_CACHE_DIR   = _PROJECT_ROOT / "data" / "cache" / "prices"
 TRADING_DAYS = 252
 FETCH_START  = "2018-01-01"
 
+# Synthetic cash asset — zero daily returns, reduces portfolio volatility
+CASH_TICKER = "CASH"
+
 _ETF_BLOCKLIST: frozenset[str] = frozenset(
     {"SPY", "QQQ", "TLT", "IEF", "AGG", "GLD", "SLV", "VTI", "VOO", "XLK", "XLF"}
 )
@@ -182,6 +185,35 @@ def _load_from_yfinance(ticker: str) -> pd.Series | None:
         return None
 
 
+# ── Latest-price helper (used by shares mode in the API layer) ────────────────
+
+def get_latest_price(ticker: str) -> float | None:
+    """
+    Return the most recent closing price for *ticker* from any available source.
+    Tries the price cache, then Alpha Vantage, then yfinance.
+    Returns None if all sources fail or the ticker is CASH.
+    """
+    if ticker == CASH_TICKER:
+        return None
+
+    # Try price cache
+    prices = _load_from_price_cache(ticker)
+    if prices is not None and not prices.empty:
+        return float(prices.iloc[-1])
+
+    # Try Alpha Vantage
+    prices = _load_from_alpha_vantage(ticker)
+    if prices is not None and not prices.empty:
+        return float(prices.iloc[-1])
+
+    # Try yfinance
+    prices = _load_from_yfinance(ticker)
+    if prices is not None and not prices.empty:
+        return float(prices.iloc[-1])
+
+    return None
+
+
 # ── Combined loader for a single ticker not in the processed file ─────────────
 
 def _load_ticker_returns(ticker: str) -> tuple[pd.Series | None, str]:
@@ -223,6 +255,7 @@ def fetch_portfolio_returns(
     2. For tickers not found there, go through the priority 2→3→4 chain.
     3. Align all series on their common date intersection.
     4. Renormalize weights if any ticker failed entirely.
+    5. CASH (if present in weights) is handled as a synthetic zero-return asset.
 
     Returns
     -------
@@ -230,7 +263,9 @@ def fetch_portfolio_returns(
 
     Raises ValueError when no ticker yields usable data.
     """
-    tickers = list(weights.keys())
+    # Separate CASH from real tickers — CASH has no price history to fetch
+    has_cash = CASH_TICKER in weights
+    tickers = [t for t in weights if t != CASH_TICKER]
 
     # ── Priority 1: processed file ──────────────────────────────────────────
     processed_df, found_in_processed = _load_from_processed_returns(tickers)
@@ -270,6 +305,10 @@ def fetch_portfolio_returns(
             "This can happen when a newly-fetched ticker has no overlapping dates "
             "with the processed returns file."
         )
+
+    # ── Add CASH as a zero-return column (dampens portfolio volatility) ─────
+    if has_cash:
+        returns_df[CASH_TICKER] = 0.0
 
     # ── Build weighted portfolio return ─────────────────────────────────────
     available = {t: weights[t] for t in weights if t in returns_df.columns}
@@ -435,7 +474,8 @@ def compute_company_risk_evidence(
         return {}
 
     candidates = sorted(
-        [(t, w) for t, w in weights.items() if t not in _ETF_BLOCKLIST],
+        [(t, w) for t, w in weights.items()
+         if t not in _ETF_BLOCKLIST and t != CASH_TICKER],
         key=lambda x: x[1],
         reverse=True,
     )[:5]

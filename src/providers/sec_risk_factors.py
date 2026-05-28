@@ -38,6 +38,18 @@ if str(_SRC) not in sys.path:
 
 from providers.sec_edgar_provider import get_latest_10k_metadata
 from providers.cache import get_cache, set_cache
+
+# ── optional Postgres layer ────────────────────────────────────────────────────
+try:
+    import db as _db
+    import db_repository as _repo
+    _DB_IMPORT_OK = True
+except ImportError:
+    _DB_IMPORT_OK = False
+
+
+def _db_live() -> bool:
+    return _DB_IMPORT_OK and _db.is_configured()
 # ──────────────────────────────────────────────────────────────────────────────
 
 DOCUMENTS_DIR = _PROJECT_ROOT / "data" / "documents"
@@ -233,11 +245,45 @@ def extract_risk_factors(ticker: str, force: bool = False) -> dict:
     cache_key = f"sec_extracted_{t}"
 
     if not force:
+        # ── Priority 0: Postgres ──────────────────────────────────────────────
+        # If we have a DB record with risk_factors_extracted=True AND the local
+        # markdown file still exists, serve it without hitting SEC EDGAR.
+        if _db_live():
+            try:
+                db_filing = _repo.get_sec_filing_from_db(t)
+                if db_filing and db_filing.get("risk_factors_path"):
+                    local_file = Path(db_filing["risk_factors_path"])
+                    if local_file.exists():
+                        print(f"[SEC] Using DB-cached filing for {t}: {local_file}")
+                        text_content = local_file.read_text(encoding="utf-8")
+                        # Strip frontmatter to get the raw extracted text
+                        body = text_content
+                        if text_content.startswith("---"):
+                            end = text_content.find("---", 3)
+                            if end != -1:
+                                body = text_content[end + 3:].strip()
+                        return {
+                            "success":          True,
+                            "ticker":           t,
+                            "cik":              db_filing.get("cik"),
+                            "filing_date":      db_filing.get("filing_date"),
+                            "accession_number": db_filing.get("accession_number"),
+                            "source_url":       db_filing.get("source_url"),
+                            "preview":          body[:500],
+                            "path":             str(local_file),
+                            "output_path":      str(local_file),
+                            "cached":           True,
+                            "error":            None,
+                        }
+            except Exception as exc:
+                print(f"[SEC] DB check failed for {t}: {exc}")
+
+        # ── Priority 1: local JSON cache ──────────────────────────────────────
         cached = get_cache(cache_key, ttl_seconds=_EXTRACTED_CACHE_TTL)
         if cached is not None:
             return {**cached, "cached": True}
 
-    # ── 1. Get filing metadata ─────────────────────────────────────────────────
+    # ── 3. Get filing metadata from SEC EDGAR ────────────────────────────────
     meta_result = get_latest_10k_metadata(t)
     if not meta_result["success"]:
         return _failure(t, None, None, None, None, meta_result["error"])
@@ -249,20 +295,20 @@ def extract_risk_factors(ticker: str, force: bool = False) -> dict:
     filing_date = filing["filing_date"]
     accession = filing["accession_number"]
 
-    # ── 2. Download filing HTML ────────────────────────────────────────────────
+    # ── 4. Download filing HTML ───────────────────────────────────────────────
     html = _download_filing_html(doc_url, t)
     if not html:
         return _failure(t, cik, filing_date, accession, doc_url,
                         "Failed to download the 10-K filing from SEC EDGAR")
 
-    # ── 3. Extract Risk Factors section ───────────────────────────────────────
+    # ── 5. Extract Risk Factors section ──────────────────────────────────────
     print(f"[SEC] Extracting Item 1A for {t} ...")
     extracted = _extract_risk_factors(html)
     if not extracted:
         return _failure(t, cik, filing_date, accession, doc_url,
                         "Could not locate the Item 1A Risk Factors section in the filing")
 
-    # ── 4. Write markdown document ────────────────────────────────────────────
+    # ── 6. Write markdown document ───────────────────────────────────────────
     out_dir = DOCUMENTS_DIR / t
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "10k_risk_factors.md"
@@ -283,17 +329,38 @@ def extract_risk_factors(ticker: str, force: bool = False) -> dict:
     print(f"[SEC] Saved → {out_path}")
 
     result: dict = {
-        "success": True,
-        "ticker": t,
-        "cik": cik,
-        "filing_date": filing_date,
+        "success":          True,
+        "ticker":           t,
+        "cik":              cik,
+        "filing_date":      filing_date,
         "accession_number": accession,
-        "source_url": doc_url,
-        "preview": extracted[:500],
-        "output_path": str(out_path),
-        "error": None,
+        "source_url":       doc_url,
+        "preview":          extracted[:500],
+        "path":             str(out_path),
+        "output_path":      str(out_path),
+        "error":            None,
     }
+
+    # ── Write-back: local JSON cache ──────────────────────────────────────────
     set_cache(cache_key, {k: v for k, v in result.items()})
+
+    # ── Write-back: Postgres ──────────────────────────────────────────────────
+    if _db_live():
+        try:
+            _repo.insert_sec_filing({
+                "ticker":               t,
+                "cik":                  str(cik) if cik else None,
+                "filing_type":          "10-K",
+                "filing_date":          filing_date,
+                "accession_number":     accession,
+                "source_url":           doc_url,
+                "risk_factors_path":    str(out_path),
+                "risk_factors_extracted": True,
+                "qdrant_ingested":      False,
+            })
+        except Exception as exc:
+            print(f"[SEC] DB write-back failed for {t}: {exc}")
+
     return {**result, "cached": False}
 
 

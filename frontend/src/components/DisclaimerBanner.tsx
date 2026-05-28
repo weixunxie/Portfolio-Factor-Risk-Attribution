@@ -1,13 +1,16 @@
 export default function DisclaimerBanner() {
   return (
-    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex items-start gap-3">
-      <span className="text-amber-500 mt-0.5 text-lg leading-none select-none">
-        &#9888;
-      </span>
-      <p className="text-sm text-amber-800">
-        <strong>Disclaimer:</strong> This tool is for educational and research
-        purposes only. It does not provide investment advice or trading
-        recommendations.
+    <div
+      style={{
+        borderTop: "1px solid var(--border-lt)",
+        paddingTop: 16,
+        marginTop: 40,
+      }}
+    >
+      <p style={{ color: "var(--faint)", fontSize: 11, lineHeight: 1.6 }}>
+        For educational and research purposes only. This tool does not constitute investment advice,
+        a solicitation, or a recommendation to buy, sell, or hold any security. All analysis is
+        based on historical data. Past performance is not indicative of future results.
       </p>
     </div>
   );

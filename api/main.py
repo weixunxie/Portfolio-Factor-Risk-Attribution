@@ -305,30 +305,39 @@ def company_risk_query(
 # ── Portfolio analysis ─────────────────────────────────────────────────────────
 
 class Holding(BaseModel):
+    """
+    A single portfolio position.
+
+    Exactly one of weight / amount / shares must be provided, matching
+    the PortfolioInput.input_mode field.  The API validates this at
+    request time rather than in the model so that the model stays
+    flexible for all three modes.
+    """
     ticker: str
-    weight: float
+    weight: Optional[float] = None   # input_mode="weights" — 0-1 or 0-100
+    amount: Optional[float] = None   # input_mode="amounts" — dollar value
+    shares: Optional[float] = None   # input_mode="shares"  — share count
 
     @field_validator("ticker")
     @classmethod
     def normalise_ticker(cls, v: str) -> str:
         return v.upper().strip()
 
-    @field_validator("weight")
-    @classmethod
-    def weight_positive(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("weight must be positive")
-        if v > 100:
-            raise ValueError("weight cannot exceed 100")
-        return round(v, 6)
-
 
 class PortfolioInput(BaseModel):
     holdings: list[Holding]
-    # Optional database-save fields (fully backward-compatible)
-    portfolio_name:  Optional[str]  = None
-    description:     Optional[str]  = None
-    portfolio_goal:  Optional[str]  = None
+
+    # ── Input mode ──────────────────────────────────────────────────────────
+    input_mode: str = "weights"           # "weights" | "amounts" | "shares"
+
+    # Used only when input_mode = "amounts"
+    total_portfolio_value:    Optional[float] = None
+    treat_unallocated_as_cash: bool           = False
+
+    # ── Optional database-save fields ───────────────────────────────────────
+    portfolio_name:   Optional[str] = None
+    description:      Optional[str] = None
+    portfolio_goal:   Optional[str] = None
     save_to_database: bool          = False
 
     @field_validator("holdings")
@@ -337,6 +346,129 @@ class PortfolioInput(BaseModel):
         if not v:
             raise ValueError("holdings list cannot be empty")
         return v
+
+
+# ── Weight resolution helper ────────────────────────────────────────────────
+
+def _resolve_to_weights(
+    body: PortfolioInput,
+) -> tuple[dict[str, float], list[str], list[str]]:
+    """
+    Convert any input_mode to a normalized weight dict {ticker: 0-1 float}.
+
+    Returns
+    -------
+    (norm_weights, warnings, errors)
+    errors is non-empty when the request is semantically invalid.
+    """
+    mode     = body.input_mode
+    holdings = body.holdings
+    warnings: list[str] = []
+
+    # ── weights mode (existing behavior) ────────────────────────────────────
+    if mode == "weights":
+        for h in holdings:
+            if h.weight is None or h.weight <= 0:
+                return {}, [], [
+                    f"Holding '{h.ticker}': weight must be positive in weights mode."
+                ]
+
+        raw_total = sum(h.weight for h in holdings)  # type: ignore[operator]
+
+        if 95.0 <= raw_total <= 105.0:
+            scale = 100.0
+        elif 0.95 <= raw_total <= 1.05:
+            scale = 1.0
+        else:
+            return {}, [], [
+                f"Weights sum to {raw_total:.4f}. "
+                "Expected weights summing to ≈ 1.0 (e.g. 0.25) or ≈ 100 (e.g. 25)."
+            ]
+
+        raw_map = {h.ticker: h.weight / scale for h in holdings}  # type: ignore[operator]
+        w_sum   = sum(raw_map.values())
+        return {t: round(w / w_sum, 8) for t, w in raw_map.items()}, warnings, []
+
+    # ── amounts mode ────────────────────────────────────────────────────────
+    if mode == "amounts":
+        for h in holdings:
+            if h.amount is None or h.amount <= 0:
+                return {}, [], [
+                    f"Holding '{h.ticker}': amount must be positive in amounts mode."
+                ]
+
+        total_entered = sum(h.amount for h in holdings)  # type: ignore[operator]
+        total_pv      = body.total_portfolio_value
+
+        if total_pv is not None:
+            if total_pv <= 0:
+                return {}, [], ["total_portfolio_value must be positive."]
+            if total_pv < total_entered - 0.01:
+                return {}, [], [
+                    f"total_portfolio_value ({total_pv:,.2f}) is less than "
+                    f"the sum of entered amounts ({total_entered:,.2f})."
+                ]
+            unallocated = max(0.0, total_pv - total_entered)
+            denominator = total_pv
+        else:
+            unallocated = 0.0
+            denominator = total_entered
+
+        raw_map: dict[str, float] = {
+            h.ticker: h.amount / denominator  # type: ignore[operator]
+            for h in holdings
+        }
+
+        if unallocated > 0.01:
+            if body.treat_unallocated_as_cash:
+                raw_map["CASH"] = unallocated / denominator
+            else:
+                warnings.append(
+                    f"Unallocated amount (${unallocated:,.2f}) was excluded from risk "
+                    "calculations. Total portfolio risk may be understated."
+                )
+
+        w_sum = sum(raw_map.values())
+        return {t: round(w / w_sum, 8) for t, w in raw_map.items()}, warnings, []
+
+    # ── shares mode ─────────────────────────────────────────────────────────
+    if mode == "shares":
+        import dynamic_portfolio as _dp
+
+        for h in holdings:
+            if h.shares is None or h.shares <= 0:
+                return {}, [], [
+                    f"Holding '{h.ticker}': shares must be positive in shares mode."
+                ]
+
+        market_values: dict[str, float] = {}
+        failed_price:  list[str]        = []
+
+        for h in holdings:
+            price = _dp.get_latest_price(h.ticker)
+            if price is None or price <= 0:
+                failed_price.append(h.ticker)
+            else:
+                market_values[h.ticker] = h.shares * price  # type: ignore[operator]
+
+        if not market_values:
+            return {}, [], [
+                f"Could not fetch prices for: {', '.join(failed_price)}. "
+                "No holdings could be priced. Check ticker symbols and connectivity."
+            ]
+
+        if failed_price:
+            warnings.append(
+                f"Could not fetch price for {', '.join(failed_price)}. "
+                "These holdings were excluded and remaining weights were renormalized."
+            )
+
+        total_value = sum(market_values.values())
+        raw         = {t: v / total_value for t, v in market_values.items()}
+        w_sum       = sum(raw.values())
+        return {t: round(w / w_sum, 8) for t, w in raw.items()}, warnings, []
+
+    return {}, [], [f"Unknown input_mode: '{mode}'. Use 'weights', 'amounts', or 'shares'."]
 
 
 @app.post("/analyze-portfolio")
@@ -354,34 +486,33 @@ def analyze_portfolio(body: PortfolioInput):
     from providers.market_data_provider import get_company_profile
     import dynamic_portfolio
 
-    # ── weight validation and normalization ──────────────────────────────────
-    raw_total = sum(h.weight for h in body.holdings)
+    # ── resolve input mode → normalized weights ──────────────────────────────
+    norm_weights, mode_warnings, mode_errors = _resolve_to_weights(body)
 
-    if 95.0 <= raw_total <= 105.0:
-        # Percentage-style input (e.g. 50 + 50 = 100) — convert to decimals
-        scale = 100.0
-    elif 0.95 <= raw_total <= 1.05:
-        scale = 1.0
-    else:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Weights sum to {raw_total:.4f}. "
-                "Expected weights summing to 1.0 (e.g. 0.25 + 0.75) "
-                "or 100 (e.g. 25 + 75). Please adjust your inputs."
-            ),
-        )
+    if mode_errors:
+        raise HTTPException(status_code=422, detail=" ".join(mode_errors))
 
-    # Build a normalized weight map that sums exactly to 1.0
-    raw_map = {h.ticker: h.weight / scale for h in body.holdings}
-    w_sum = sum(raw_map.values())
-    norm_weights: dict[str, float] = {t: round(w / w_sum, 8) for t, w in raw_map.items()}
+    # Build a synthetic Holding list that always has weight set (for downstream code)
+    resolved_holdings = [
+        Holding(ticker=t, weight=round(w * 100, 6))   # store as 0-100 internally
+        for t, w in norm_weights.items()
+    ]
 
     # ── company profiles (errors are isolated — never abort the endpoint) ────
     enriched_holdings = []
-    for h in body.holdings:
+    for h in resolved_holdings:
         try:
-            profile = get_company_profile(h.ticker)
+            if h.ticker == "CASH":
+                # Synthetic asset — no external data needed
+                profile = {
+                    "ticker": "CASH",
+                    "name": "Cash / Money Market",
+                    "sector": "Cash",
+                    "industry": "Cash Equivalent",
+                    "source": "synthetic",
+                }
+            else:
+                profile = get_company_profile(h.ticker)
         except Exception as exc:
             profile = {"error": str(exc)}
 
@@ -429,6 +560,26 @@ def analyze_portfolio(body: PortfolioInput):
         try:
             import db_repository as _repo
 
+            # Step 1: upsert companies FIRST — portfolio_holdings and sec_filings
+            # both have FK → companies(ticker), so the company row must exist first.
+            for eh in enriched_holdings:
+                try:
+                    _repo.upsert_company({
+                        "ticker":      eh["ticker"],
+                        "name":        eh["profile"].get("name"),
+                        "sector":      eh["profile"].get("sector"),
+                        "industry":    eh["profile"].get("industry"),
+                        "exchange":    eh["profile"].get("exchange"),
+                        "market_cap":  eh["profile"].get("market_cap"),
+                        "pe_ratio":    eh["profile"].get("pe_ratio"),
+                        "week_52_high": eh["profile"].get("week_52_high"),
+                        "week_52_low":  eh["profile"].get("week_52_low"),
+                        "source":      eh["profile"].get("source"),
+                    })
+                except Exception as exc:
+                    db_warnings.append(f"Company upsert failed for {eh['ticker']}: {exc}")
+
+            # Step 2: create portfolio and holdings
             portfolio_id = _repo.create_portfolio(
                 portfolio_name=body.portfolio_name or "Unnamed Portfolio",
                 description=body.description,
@@ -438,6 +589,8 @@ def analyze_portfolio(body: PortfolioInput):
                 portfolio_id,
                 [{"ticker": t, "weight": w} for t, w in norm_weights.items()],
             )
+
+            # Step 3: save analysis results
             analysis_id = _repo.insert_analysis_run(
                 request_holdings=[{"ticker": t, "weight": w} for t, w in norm_weights.items()],
                 risk_metrics=analysis["risk_metrics"],
@@ -452,7 +605,7 @@ def analyze_portfolio(body: PortfolioInput):
         except Exception as exc:
             db_warnings.append(f"Database save failed: {exc}")
 
-    all_warnings = analysis["warnings"] + db_warnings
+    all_warnings = mode_warnings + analysis["warnings"] + db_warnings
 
     return {
         "holdings": enriched_holdings,
