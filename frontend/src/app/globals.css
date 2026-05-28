@@ -175,3 +175,87 @@
 .contact-icon-link:hover {
   color: var(--muted);
 }
+
+/* ── Responsive app shell ────────────────────────────────────────────────── */
+
+/* Left sidebar — fluid width between 280 px and 340 px */
+.app-sidebar {
+  width: clamp(280px, 22vw, 340px);
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Right main scroll container */
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Inner content wrapper — centers on wide screens, responsive horizontal pad */
+.app-main-inner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding-left: clamp(28px, 4vw, 56px);
+  padding-right: clamp(28px, 4vw, 56px);
+}
+
+/* Landing-page vertical centering wrapper */
+.landing-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: clamp(10px, 2vh, 22px);
+  padding-bottom: clamp(18px, 3vh, 36px);
+}
+
+/* 2×2 card grid with responsive gap */
+.landing-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(8px, 1.2vw, 14px);
+}
+
+/* Landing feature card — responsive padding */
+.responsive-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: clamp(14px, 1.6vw, 20px);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Global disclaimer footer */
+.global-disclaimer {
+  padding-top: clamp(5px, 0.8vh, 10px);
+  padding-bottom: clamp(5px, 1vh, 10px);
+  text-align: center;
+}
+
+/* Responsive top-pad for result / loading / error states */
+.panel-pad {
+  padding-top: clamp(24px, 4vh, 48px);
+  padding-bottom: 0;
+}
+
+/* Stack sidebar above content on very small screens */
+@media (max-width: 640px) {
+  .app-sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}

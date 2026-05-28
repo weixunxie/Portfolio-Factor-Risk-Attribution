@@ -3,15 +3,20 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AnalyzePortfolioResponse } from "@/lib/api";
+import type { AnalyzePortfolioResponse, AiSummary } from "@/lib/api";
+import { generateRiskSummary } from "@/lib/api";
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function pct(n: number, d = 1) {
   return `${(n * 100).toFixed(d)}%`;
 }
 
-function buildReport(result: AnalyzePortfolioResponse): string {
+function buildMarkdownReport(result: AnalyzePortfolioResponse): string {
   const { holdings, risk_metrics: m, top_risk_contributors: contrib, stress_analysis } = result;
-  const today = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  const today = new Date().toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
 
   const holdingsTable = holdings
     .map((h) => `| ${h.ticker} | ${h.profile.name || "—"} | ${h.profile.sector || "—"} | ${h.weight_pct} |`)
@@ -88,8 +93,91 @@ ${stressRows}
 *This report is for educational and research purposes only and does not constitute investment advice. All analysis is backward-looking. Past performance is not indicative of future results.*`;
 }
 
-export default function RiskReportPreview({ result }: { result: AnalyzePortfolioResponse }) {
-  const report = buildReport(result);
+function buildAiMarkdown(ai: AiSummary): string {
+  const risks = (ai.key_risks ?? []).map((r) => `- ${r}`).join("\n");
+  return `# AI Risk Summary
+
+## Summary
+${ai.summary ?? ""}
+
+## Key Risks
+${risks}
+
+## Stress Period
+${ai.stress_takeaway ?? ""}
+
+## SEC Evidence
+${ai.evidence_takeaway ?? ""}
+
+## Disclaimer
+${ai.disclaimer ?? ""}`;
+}
+
+// ── Shared styles ─────────────────────────────────────────────────────────────
+
+const cardWrap: React.CSSProperties = {
+  background: "var(--surface)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  overflow: "hidden",
+};
+
+const cardHeader: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  padding: "11px 18px",
+  borderBottom: "1px solid var(--border-lt)",
+  background: "var(--bg)",
+  gap: 10,
+};
+
+function borderBtn(style: React.CSSProperties = {}): React.CSSProperties {
+  return {
+    background: "var(--surface)",
+    color: "var(--muted)",
+    border: "1px solid var(--border)",
+    borderRadius: 4,
+    padding: "4px 11px",
+    fontSize: 11,
+    fontWeight: 500,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    transition: "all 0.15s",
+    whiteSpace: "nowrap" as const,
+    ...style,
+  };
+}
+
+function primaryBtn(style: React.CSSProperties = {}): React.CSSProperties {
+  return {
+    background: "var(--text)",
+    color: "#fff",
+    border: "none",
+    borderRadius: 4,
+    padding: "4px 12px",
+    fontSize: 11,
+    fontWeight: 500,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    transition: "all 0.15s",
+    whiteSpace: "nowrap" as const,
+    ...style,
+  };
+}
+
+const eyebrow: React.CSSProperties = {
+  color: "var(--faint)",
+  fontSize: 9.5,
+  fontWeight: 700,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  marginBottom: 5,
+};
+
+// ── Card 1: Portfolio Risk Report ─────────────────────────────────────────────
+
+function ReportCard({ report }: { report: string }) {
   const [copied, setCopied] = useState(false);
 
   function handleCopy() {
@@ -100,56 +188,222 @@ export default function RiskReportPreview({ result }: { result: AnalyzePortfolio
   }
 
   return (
-    <div
-      style={{
-        background: "var(--surface)",
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        overflow: "hidden",
-      }}
-    >
-      {/* Toolbar */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "12px 18px",
-          borderBottom: "1px solid var(--border-lt)",
-          background: "var(--bg)",
-        }}
-      >
-        <div>
-          <span style={{ color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}>Report preview</span>
-          <span style={{ color: "var(--faint)", fontSize: 11, marginLeft: 10 }}>
-            Copy as Markdown
-          </span>
-        </div>
+    <div style={cardWrap}>
+      <div style={cardHeader}>
+        <span style={{ color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}>
+          Portfolio Risk Report
+        </span>
         <button
           onClick={handleCopy}
-          style={{
-            background: copied ? "var(--pos-bg)" : "var(--surface)",
-            color: copied ? "var(--positive)" : "var(--muted)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            padding: "5px 12px",
-            fontSize: 11.5,
-            fontWeight: 500,
-            cursor: "pointer",
-            fontFamily: "inherit",
-            transition: "all 0.15s",
-          }}
+          style={borderBtn(copied ? { color: "var(--positive)", borderColor: "var(--border)" } : {})}
         >
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-
-      {/* Content */}
-      <div style={{ padding: "18px 22px", maxHeight: 460, overflowY: "auto" }}>
+      <div style={{ padding: "18px 22px", maxHeight: 440, overflowY: "auto" }}>
         <div className="prose-report">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{report}</ReactMarkdown>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Card 2: AI Risk Summary ───────────────────────────────────────────────────
+
+function AiCard({
+  aiSummary,
+  aiLoading,
+  aiError,
+  onGenerate,
+}: {
+  aiSummary: AiSummary | null;
+  aiLoading: boolean;
+  aiError: string | null;
+  onGenerate: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    if (!aiSummary) return;
+    navigator.clipboard.writeText(buildAiMarkdown(aiSummary)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  // Header right-side button: exactly one, mutually exclusive states
+  let headerBtn: React.ReactNode;
+  if (aiLoading) {
+    headerBtn = (
+      <button disabled style={borderBtn({ cursor: "not-allowed", color: "var(--faint)" })}>
+        Generating…
+      </button>
+    );
+  } else if (aiSummary) {
+    headerBtn = (
+      <button
+        onClick={handleCopy}
+        style={borderBtn(copied ? { color: "var(--positive)" } : {})}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
+    );
+  } else {
+    headerBtn = (
+      <button onClick={onGenerate} style={primaryBtn()}>
+        Generate AI Summary
+      </button>
+    );
+  }
+
+  return (
+    <div style={cardWrap}>
+      {/* Header */}
+      <div style={cardHeader}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}>
+            AI Risk Summary
+          </span>
+          <span
+            style={{
+              fontSize: 9.5,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: "var(--faint)",
+              border: "1px solid var(--border-lt)",
+              borderRadius: 3,
+              padding: "1px 6px",
+            }}
+          >
+            GPT
+          </span>
+        </div>
+        {headerBtn}
+      </div>
+
+      {/* Body */}
+      <div style={{ padding: "16px 18px" }}>
+        {/* Loading */}
+        {aiLoading && (
+          <p style={{ color: "var(--faint)", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+            Generating AI summary from computed risk metrics and evidence…
+          </p>
+        )}
+
+        {/* Error */}
+        {!aiLoading && aiError && (
+          <p style={{ color: "var(--warning)", fontSize: 12, lineHeight: 1.5, margin: 0 }}>
+            {aiError}
+          </p>
+        )}
+
+        {/* Placeholder — no summary, not loading, no error */}
+        {!aiLoading && !aiError && !aiSummary && (
+          <p style={{ color: "var(--muted)", fontSize: 12.5, lineHeight: 1.65, margin: 0, maxWidth: 520 }}>
+            Portfolio metrics and evidence are ready. Generate an AI summary to create a
+            concise research-style explanation of the portfolio&apos;s key risks.
+          </p>
+        )}
+
+        {/* AI Summary content */}
+        {!aiLoading && aiSummary && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {aiSummary.summary && (
+              <p style={{ color: "var(--text)", fontSize: 12.5, lineHeight: 1.65, margin: 0 }}>
+                {aiSummary.summary}
+              </p>
+            )}
+
+            {aiSummary.key_risks && aiSummary.key_risks.length > 0 && (
+              <div>
+                <p style={eyebrow}>Key risks</p>
+                <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 5 }}>
+                  {aiSummary.key_risks.map((r, i) => (
+                    <li key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                      <span style={{ color: "var(--negative)", fontSize: 11, marginTop: 2, flexShrink: 0 }}>▸</span>
+                      <span style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.55 }}>{r}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {aiSummary.stress_takeaway && (
+              <div>
+                <p style={eyebrow}>Stress period</p>
+                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                  {aiSummary.stress_takeaway}
+                </p>
+              </div>
+            )}
+
+            {aiSummary.evidence_takeaway && (
+              <div>
+                <p style={eyebrow}>SEC evidence</p>
+                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                  {aiSummary.evidence_takeaway}
+                </p>
+              </div>
+            )}
+
+            {aiSummary.disclaimer && (
+              <p
+                style={{
+                  color: "var(--faint)",
+                  fontSize: 10.5,
+                  lineHeight: 1.5,
+                  margin: 0,
+                  borderTop: "1px solid var(--border-lt)",
+                  paddingTop: 10,
+                }}
+              >
+                {aiSummary.disclaimer}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+export default function RiskReportPreview({ result }: { result: AnalyzePortfolioResponse }) {
+  const [aiSummary, setAiSummary] = useState<AiSummary | null>(result.ai_summary ?? null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const report = buildMarkdownReport(result);
+
+  async function handleGenerate() {
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const ai = await generateRiskSummary(result);
+      setAiSummary(ai);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setAiError(`AI summary could not be generated. Risk metrics are still available. (${msg})`);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Card 1 — deterministic report, always shown */}
+      <ReportCard report={report} />
+
+      {/* Card 2 — AI summary, generate on demand */}
+      <AiCard
+        aiSummary={aiSummary}
+        aiLoading={aiLoading}
+        aiError={aiError}
+        onGenerate={handleGenerate}
+      />
     </div>
   );
 }

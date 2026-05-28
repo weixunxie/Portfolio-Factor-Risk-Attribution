@@ -340,6 +340,9 @@ class PortfolioInput(BaseModel):
     portfolio_goal:   Optional[str] = None
     save_to_database: bool          = False
 
+    # ── Optional AI summary ──────────────────────────────────────────────────
+    generate_ai_summary: bool = False
+
     @field_validator("holdings")
     @classmethod
     def at_least_one(cls, v: list[Holding]) -> list[Holding]:
@@ -607,6 +610,40 @@ def analyze_portfolio(body: PortfolioInput):
 
     all_warnings = mode_warnings + analysis["warnings"] + db_warnings
 
+    # ── Optional AI summary ──────────────────────────────────────────────────
+    import logging as _logging
+    _ai_logger = _logging.getLogger("ai_summary")
+
+    ai_summary = None
+    if body.generate_ai_summary:
+        try:
+            import ai_summary as _ai
+
+            ai_input = {
+                "holdings":              enriched_holdings,
+                "risk_metrics":          analysis["risk_metrics"],
+                "top_risk_contributors": analysis["top_risk_contributors"],
+                "stress_analysis":       analysis["stress_analysis"],
+                "company_risk_evidence": analysis["company_risk_evidence"],
+                "warnings":              all_warnings,
+            }
+            result_ai = _ai.generate_portfolio_risk_summary(ai_input)
+
+            if "error" in result_ai:
+                reason = result_ai["error"]
+                _ai_logger.warning("AI summary returned error: %s", reason)
+                # Truncate to keep response clean; never expose key content
+                safe = reason[:160] if len(reason) > 160 else reason
+                all_warnings.append(f"AI summary could not be generated: {safe}")
+                ai_summary = None
+            else:
+                ai_summary = result_ai
+
+        except Exception as _exc:
+            _ai_logger.exception("AI summary raised an unhandled exception")
+            safe = f"{type(_exc).__name__}: {str(_exc)[:120]}"
+            all_warnings.append(f"AI summary could not be generated: {safe}")
+
     return {
         "holdings": enriched_holdings,
         "total_weight": total_weight,
@@ -621,8 +658,81 @@ def analyze_portfolio(body: PortfolioInput):
         "warnings": all_warnings,
         "portfolio_id": portfolio_id,
         "analysis_id":  analysis_id,
+        "ai_summary": ai_summary,
         "disclaimer": (
             "This tool is for educational and research purposes only. "
             "It does not provide investment advice or trading recommendations."
         ),
     }
+
+
+# ── AI summary diagnostics endpoint ───────────────────────────────────────────
+
+@app.get("/ai-summary-status")
+def ai_summary_status():
+    """
+    Lightweight check: is the AI summary layer configured and reachable?
+    Never returns the API key value.
+    """
+    import ai_summary as _ai   # noqa: F401 — just checks import
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    model   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    configured = bool(api_key)
+    key_hint   = f"...{api_key[-4:]}" if configured else "(not set)"
+
+    try:
+        import openai as _oai
+        sdk_version = getattr(_oai, "__version__", "unknown")
+    except ImportError:
+        sdk_version = "NOT INSTALLED"
+
+    return {
+        "openai_configured": configured,
+        "openai_key_hint":   key_hint,
+        "openai_model":      model,
+        "openai_sdk_version": sdk_version,
+        "note": "Call POST /generate-risk-summary with a real analysis payload to test end-to-end.",
+    }
+
+
+# ── Standalone AI risk summary endpoint ────────────────────────────────────────
+
+class AnalysisResultInput(BaseModel):
+    """Accepts the same shape as /analyze-portfolio response for standalone summarization."""
+    risk_metrics:           dict
+    holdings:               list     = []
+    top_risk_contributors:  list     = []
+    stress_analysis:        list     = []
+    company_risk_evidence:  dict     = {}
+    warnings:               list     = []
+
+
+@app.post("/generate-risk-summary")
+def generate_risk_summary(body: AnalysisResultInput):
+    """
+    Generate an AI risk summary from a pre-computed analysis result.
+
+    Accepts the same JSON shape as the /analyze-portfolio response.
+    Requires OPENAI_API_KEY to be set on the backend.
+    This endpoint never returns investment advice or trading recommendations.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not configured on the server.",
+        )
+
+    try:
+        import ai_summary as _ai
+
+        result = _ai.generate_portfolio_risk_summary(body.model_dump())
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI summary failed: {exc}")

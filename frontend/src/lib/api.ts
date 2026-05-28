@@ -100,6 +100,14 @@ export interface RiskEvidenceHit {
 
 export type RiskEvidenceEntry = RiskEvidenceHit[] | { message: string };
 
+export interface AiSummary {
+  summary: string;
+  key_risks: string[];
+  stress_takeaway: string;
+  evidence_takeaway: string;
+  disclaimer: string;
+}
+
 export interface AnalyzePortfolioResponse {
   holdings: EnrichedHolding[];
   total_weight: number;
@@ -114,6 +122,7 @@ export interface AnalyzePortfolioResponse {
   warnings: string[];
   portfolio_id: string | null;
   analysis_id: string | null;
+  ai_summary: AiSummary | null;
   disclaimer: string;
 }
 
@@ -125,6 +134,7 @@ export const analyzePortfolio = (
     input_mode?: InputMode;
     total_portfolio_value?: number;
     treat_unallocated_as_cash?: boolean;
+    generate_ai_summary?: boolean;
     portfolio_name?: string;
     portfolio_goal?: string;
     save_to_database?: boolean;
@@ -135,6 +145,16 @@ export const analyzePortfolio = (
     input_mode: "weights",
     save_to_database: true,
     ...opts,
+  });
+
+export const generateRiskSummary = (result: AnalyzePortfolioResponse) =>
+  post<AiSummary>("/generate-risk-summary", {
+    risk_metrics:           result.risk_metrics,
+    holdings:               result.holdings,
+    top_risk_contributors:  result.top_risk_contributors,
+    stress_analysis:        result.stress_analysis,
+    company_risk_evidence:  result.company_risk_evidence,
+    warnings:               result.warnings,
   });
 
 // Static endpoints kept for backward compatibility
