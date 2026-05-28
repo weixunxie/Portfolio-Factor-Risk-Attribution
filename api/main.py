@@ -28,18 +28,32 @@ if str(SRC) not in sys.path:
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
-_default_origins = [
+# Add your Vercel frontend URL as FRONTEND_URL in Railway Variables.
+# Multiple URLs can be comma-separated in FRONTEND_ORIGIN as a fallback.
+_ALLOWED_ORIGINS: list[str] = [
     "http://localhost:3000",
-    "http://localhost:3002",   # primary local dev port
+    "http://localhost:3002",
     "http://localhost:5173",
+    # Deployed Vercel frontend (hardcoded as safe fallback)
+    "https://ai-portfolio-risk-assistant-9sy31ue8b-stephanie-xie-s-projects.vercel.app",
 ]
-_env_origin = os.environ.get("FRONTEND_ORIGIN", "")
-# Setting FRONTEND_ORIGIN=* in Railway allows any origin (fine for a public research tool)
-if _env_origin.strip() == "*":
-    ALLOWED_ORIGINS: list[str] = ["*"]
-else:
-    _extra = [o.strip() for o in _env_origin.split(",") if o.strip()]
-    ALLOWED_ORIGINS = list(dict.fromkeys(_default_origins + _extra))
+
+# FRONTEND_URL — single production URL set in Railway Variables
+_frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+if _frontend_url:
+    _ALLOWED_ORIGINS.append(_frontend_url)
+
+# FRONTEND_ORIGIN — comma-separated list or * (legacy support)
+_env_origin = os.environ.get("FRONTEND_ORIGIN", "").strip()
+if _env_origin == "*":
+    _ALLOWED_ORIGINS = ["*"]
+elif _env_origin:
+    for _o in _env_origin.split(","):
+        _o = _o.strip()
+        if _o and _o not in _ALLOWED_ORIGINS:
+            _ALLOWED_ORIGINS.append(_o)
+
+ALLOWED_ORIGINS = list(dict.fromkeys(_ALLOWED_ORIGINS))
 # ──────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Portfolio Risk API", version="2.0.0")
@@ -47,8 +61,8 @@ app = FastAPI(title="Portfolio Risk API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=ALLOWED_ORIGINS != ["*"],  # credentials incompatible with wildcard
-    allow_methods=["GET", "POST"],
+    allow_credentials=False,   # no cookies/auth — False is compatible with wildcard too
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
