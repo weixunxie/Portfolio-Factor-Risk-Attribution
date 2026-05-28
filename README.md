@@ -163,6 +163,131 @@ The dashboard opens at `http://localhost:8501`.
 
 ---
 
+## Data Providers
+
+The `src/providers/` layer adds dynamic data access on top of the static MVP pipeline.
+
+### Alpha Vantage (`alpha_vantage_provider.py`)
+
+Used for live market and company data.
+
+| Function | Alpha Vantage endpoint | What it returns |
+|---|---|---|
+| `get_company_overview(ticker)` | `OVERVIEW` | Name, sector, industry, P/E, 52-week range, description |
+| `get_daily_adjusted_prices(ticker)` | `TIME_SERIES_DAILY_ADJUSTED` | Last ~100 days of OHLCV data |
+
+Set `ALPHA_VANTAGE_API_KEY` in your `.env` file.
+The free tier allows 25 API calls per day — the local cache prevents re-fetching data that was already retrieved within the last 24 hours.
+
+### SEC EDGAR (`sec_edgar_provider.py`)
+
+Used for official company filings metadata. No API key required.
+
+| Function | What it returns |
+|---|---|
+| `get_company_ticker_mapping()` | Full ticker → CIK mapping from SEC |
+| `get_cik_for_ticker(ticker)` | CIK number and company name for a single ticker |
+| `get_latest_10k_metadata(ticker)` | Most recent 10-K filing date, accession number, and document URLs |
+
+Set `SEC_USER_AGENT` in your `.env` file (required by SEC): `"AppName your@email.com"`
+
+### Unified interface (`market_data_provider.py`)
+
+Wraps both sources with a consistent API and automatic fallback:
+
+| Function | Primary source | Fallback |
+|---|---|---|
+| `validate_ticker(ticker)` | Alpha Vantage | yfinance |
+| `get_company_profile(ticker)` | Alpha Vantage | yfinance |
+| `get_price_history(ticker)` | Alpha Vantage | yfinance |
+
+### Local cache (`cache.py`)
+
+All API responses are cached in `data/cache/` (excluded from Git).
+- JSON responses are cached as `.json` files.
+- Cache keys are sanitised to safe filenames (e.g. `av_overview_AAPL.json`).
+- Each cache entry has a configurable TTL: 24 hours for price/overview data, 7 days for SEC data.
+
+---
+
+## Deployment
+
+### Backend — Railway or Render
+
+| Setting | Value |
+|---|---|
+| Root directory | *(repo root)* |
+| Build command | `pip install -r requirements.txt` |
+| Start command | `uvicorn api.main:app --host 0.0.0.0 --port $PORT` |
+
+Required environment variables:
+
+```
+ALPHA_VANTAGE_API_KEY=...
+SEC_USER_AGENT=AppName your@email.com
+QDRANT_URL=https://your-cluster.cloud.qdrant.io
+QDRANT_API_KEY=...
+QDRANT_COLLECTION_NAME=company_risk_documents
+DATABASE_URL=postgresql://user:pass@host:5432/postgres   # direct connection — NEVER expose to frontend
+FRONTEND_ORIGIN=https://your-vercel-app.vercel.app
+```
+
+> **Supabase note:** Use the direct connection string (port 5432), not the connection pooler (port 6543),
+> because the pooler does not support all PostgreSQL features used by SQLAlchemy.
+> Find it in your Supabase project → Settings → Database → Connection string → URI.
+
+### Frontend — Vercel
+
+| Setting | Value |
+|---|---|
+| Root directory | `frontend` |
+| Framework preset | Next.js (auto-detected) |
+| Build command | `npm run build` (auto) |
+
+Required environment variable:
+
+```
+NEXT_PUBLIC_API_BASE_URL=https://your-railway-or-render-backend.up.railway.app
+```
+
+Set `NEXT_PUBLIC_API_BASE_URL` to your Railway/Render backend URL before deploying.
+After deploying the frontend, also set `FRONTEND_ORIGIN` on the backend to the Vercel URL.
+
+### Local development
+
+```bash
+# Backend (port 8000)
+source .venv/bin/activate
+uvicorn api.main:app --reload
+
+# Frontend (port 3002)
+cd frontend
+npm run dev
+```
+
+---
+
+## PostgreSQL / Supabase Integration
+
+The backend connects to PostgreSQL (hosted on Supabase) via a direct `DATABASE_URL` using SQLAlchemy + psycopg2. No Supabase REST client or service role key is used.
+
+| Table | What it stores |
+|---|---|
+| `companies` | Company profile data (name, sector, market cap, P/E, …) upserted by `/company-profile` |
+| `portfolios` | Named portfolio records created by `/analyze-portfolio` when `save_to_database=true` |
+| `portfolio_holdings` | Per-ticker weights for each saved portfolio |
+| `sec_filings` | 10-K filing metadata (filing date, accession number, extraction status, Qdrant ingestion flag) |
+| `analysis_runs` | Full risk analysis snapshots (metrics, contributors, stress periods, evidence) |
+| `rag_documents` | Chunk-level metadata for every document ingested into Qdrant |
+| `api_cache_metadata` | Record of external API cache entries (Alpha Vantage, SEC) |
+
+**Architecture note:**
+- **Qdrant** stores the actual vector embeddings and is queried for semantic similarity search over SEC risk factor text.
+- **PostgreSQL / Supabase** stores structured metadata, portfolio history, and analysis snapshots — it is never queried for vectors.
+- The **Next.js frontend calls FastAPI only**. `DATABASE_URL` belongs exclusively in backend environment variables and must never appear in any `NEXT_PUBLIC_` variable.
+
+---
+
 ## Disclaimer
 
 This tool is for **educational and research purposes only**. It does not constitute investment advice,

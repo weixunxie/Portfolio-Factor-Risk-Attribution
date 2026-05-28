@@ -1,0 +1,36 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Qdrant local storage
+qdrant_storage/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# Provider cache (local API response cache — never commit)
+data/cache/
+data/cache/sec_filings/
+
+# Outputs (large generated files — keep tracked CSVs, ignore charts)
+outputs/charts/*.png
