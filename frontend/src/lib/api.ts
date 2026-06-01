@@ -45,6 +45,7 @@ export interface EnrichedHolding {
     week_52_high: string;
     week_52_low: string;
     source: string;
+    security_type: string;   // "Equity" | "ETF" | ""
     profile_error?: string | null;
   };
 }
@@ -103,9 +104,74 @@ export type RiskEvidenceEntry = RiskEvidenceHit[] | { message: string };
 export interface AiSummary {
   summary: string;
   key_risks: string[];
+  risk_attribution_takeaway?: string;
+  factor_regression_takeaway?: string;
   stress_takeaway: string;
   evidence_takeaway: string;
   disclaimer: string;
+}
+
+// ── Factor Regression types ───────────────────────────────────────────────────
+
+export interface FactorEntry {
+  ticker: string;
+  label: string;
+  beta: number;
+  t_stat: number;
+  p_value: number;
+  significant: boolean;
+  interpretation: string;
+}
+
+export interface FactorRegressionIntercept {
+  beta: number;
+  t_stat: number;
+  p_value: number;
+}
+
+export interface FactorRegression {
+  available: boolean;
+  reason?: string;
+  factors: FactorEntry[];
+  intercept?: FactorRegressionIntercept;
+  r_squared: number | null;
+  adj_r_squared: number | null;
+  n_obs: number;
+  condition_number: number | null;
+  missing_factors: string[];
+  warnings: string[];
+  model_note: string;
+}
+
+// ── Risk Attribution types ────────────────────────────────────────────────────
+
+export interface RiskAttributionItem {
+  risk_level: "Low" | "Moderate" | "High" | "Unknown";
+  available: boolean;
+  metrics: Record<string, unknown>;
+  summary: string;
+  short_reason: string;
+  drivers: string[];
+}
+
+export interface RiskAttributionOverall {
+  overall_risk_level: "Low" | "Moderate" | "High";
+  dominant_drivers: string[];
+  secondary_drivers: string[];
+  summary: string;
+  risk_score: number;
+  available_dimensions: number;
+}
+
+export interface RiskAttribution {
+  market_risk: RiskAttributionItem;
+  sector_risk: RiskAttributionItem;
+  style_risk: RiskAttributionItem;
+  macro_risk: RiskAttributionItem;
+  concentration_risk: RiskAttributionItem;
+  tail_risk: RiskAttributionItem;
+  overall: RiskAttributionOverall;
+  factor_regression?: FactorRegression;
 }
 
 export interface AnalyzePortfolioResponse {
@@ -118,6 +184,7 @@ export interface AnalyzePortfolioResponse {
   top_risk_contributors: RiskContributor[];
   stress_analysis: StressPeriodResult[];
   company_risk_evidence: Record<string, RiskEvidenceEntry>;
+  risk_attribution: RiskAttribution | null;
   failed_tickers: string[];
   warnings: string[];
   portfolio_id: string | null;
@@ -154,6 +221,7 @@ export const generateRiskSummary = (result: AnalyzePortfolioResponse) =>
     top_risk_contributors:  result.top_risk_contributors,
     stress_analysis:        result.stress_analysis,
     company_risk_evidence:  result.company_risk_evidence,
+    risk_attribution:       result.risk_attribution ?? {},
     warnings:               result.warnings,
   });
 

@@ -556,15 +556,16 @@ def analyze_portfolio(body: PortfolioInput):
                 "weight": norm_weights[h.ticker],
                 "weight_pct": f"{norm_weights[h.ticker] * 100:.1f}%",
                 "profile": {
-                    "name":         profile.get("name", ""),
-                    "sector":       profile.get("sector", ""),
-                    "industry":     profile.get("industry", ""),
-                    "exchange":     profile.get("exchange", ""),
-                    "market_cap":   profile.get("market_cap", ""),
-                    "pe_ratio":     profile.get("pe_ratio", ""),
-                    "week_52_high": profile.get("week_52_high", ""),
-                    "week_52_low":  profile.get("week_52_low", ""),
-                    "source":       profile.get("source", ""),
+                    "name":          profile.get("name", ""),
+                    "sector":        profile.get("sector", ""),
+                    "industry":      profile.get("industry", ""),
+                    "exchange":      profile.get("exchange", ""),
+                    "market_cap":    profile.get("market_cap", ""),
+                    "pe_ratio":      profile.get("pe_ratio", ""),
+                    "week_52_high":  profile.get("week_52_high", ""),
+                    "week_52_low":   profile.get("week_52_low", ""),
+                    "source":        profile.get("source", ""),
+                    "security_type": profile.get("security_type", "Equity"),
                     "profile_error": profile.get("error"),
                 },
             }
@@ -582,6 +583,10 @@ def analyze_portfolio(body: PortfolioInput):
             status_code=500,
             detail=f"Risk calculation failed: {exc}",
         )
+
+    # Pop internal DataFrames before they reach any serialisation path
+    _returns_df   = analysis.pop("_returns_df",   None)
+    _port_returns = analysis.pop("_port_returns",  None)
 
     total_weight = round(sum(norm_weights.values()), 6)
 
@@ -641,6 +646,22 @@ def analyze_portfolio(body: PortfolioInput):
 
     all_warnings = mode_warnings + analysis["warnings"] + db_warnings
 
+    # ── Risk attribution ─────────────────────────────────────────────────────
+    risk_attribution: dict = {}
+    try:
+        import risk_attribution as _ra
+        risk_attribution = _ra.compute_risk_attribution(
+            weights=norm_weights,
+            returns_df=_returns_df,
+            port_returns=_port_returns,
+            risk_metrics=analysis["risk_metrics"],
+            top_risk_contributors=analysis["top_risk_contributors"],
+            stress_analysis=analysis["stress_analysis"],
+            enriched_holdings=enriched_holdings,
+        )
+    except Exception as _exc:
+        all_warnings.append(f"Risk attribution could not be computed: {str(_exc)[:160]}")
+
     # ── Optional AI summary ──────────────────────────────────────────────────
     import logging as _logging
     _ai_logger = _logging.getLogger("ai_summary")
@@ -656,6 +677,7 @@ def analyze_portfolio(body: PortfolioInput):
                 "top_risk_contributors": analysis["top_risk_contributors"],
                 "stress_analysis":       analysis["stress_analysis"],
                 "company_risk_evidence": analysis["company_risk_evidence"],
+                "risk_attribution":      risk_attribution,
                 "warnings":              all_warnings,
             }
             result_ai = _ai.generate_portfolio_risk_summary(ai_input)
@@ -685,6 +707,7 @@ def analyze_portfolio(body: PortfolioInput):
         "top_risk_contributors": analysis["top_risk_contributors"],
         "stress_analysis": analysis["stress_analysis"],
         "company_risk_evidence": analysis["company_risk_evidence"],
+        "risk_attribution": risk_attribution,
         "failed_tickers": analysis["failed_tickers"],
         "warnings": all_warnings,
         "portfolio_id": portfolio_id,
@@ -736,6 +759,7 @@ class AnalysisResultInput(BaseModel):
     top_risk_contributors:  list     = []
     stress_analysis:        list     = []
     company_risk_evidence:  dict     = {}
+    risk_attribution:       dict     = {}
     warnings:               list     = []
 
 

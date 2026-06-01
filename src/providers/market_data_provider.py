@@ -33,6 +33,7 @@ from .alpha_vantage_provider import (
     get_company_overview,
     get_daily_prices,
 )
+from .security_metadata import resolve_security_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -134,14 +135,24 @@ def validate_ticker(ticker: str) -> dict:
 
 def get_company_profile(ticker: str) -> dict:
     """
-    Return a normalised company profile dict.
+    Return a normalised, resolved company profile dict.
 
-    Guaranteed fields (empty string when unknown):
-      ticker, name, exchange, sector, industry, description, currency,
-      market_cap, pe_ratio, week_52_high, week_52_low, dividend_yield,
-      source, cached, error
+    Resolution order (per field):
+      name          → live API → static fallback map → ticker symbol
+      sector        → live API (normalized) → static fallback map → "Unknown"
+      industry      → live API → static fallback map → ""
+      security_type → live API → static fallback map → inferred → "Equity"
+
+    All live sources (DB, AV, yfinance) are tried first.
+    The static fallback map is applied last via resolve_security_metadata().
     """
     t = ticker.upper().strip()
+    raw = _get_raw_profile(t)
+    return resolve_security_metadata(t, raw)
+
+
+def _get_raw_profile(t: str) -> dict:
+    """Fetch a raw (un-resolved) profile from DB → AV cache → AV API → yfinance."""
 
     def _empty(source: str | None, error: str | None) -> dict:
         return {
@@ -195,7 +206,6 @@ def get_company_profile(ticker: str) -> dict:
             "cached":        av["cached"],
             "error":         None,
         }
-        # Write-back to Postgres if data came from the live API
         if not av["cached"]:
             _write_company_db(profile)
         return profile

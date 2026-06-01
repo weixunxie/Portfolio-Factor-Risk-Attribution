@@ -3,13 +3,41 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { AnalyzePortfolioResponse, AiSummary } from "@/lib/api";
+import type { AnalyzePortfolioResponse, AiSummary, RiskAttribution } from "@/lib/api";
 import { generateRiskSummary } from "@/lib/api";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 function pct(n: number, d = 1) {
   return `${(n * 100).toFixed(d)}%`;
+}
+
+function buildAttributionMarkdown(attr: RiskAttribution): string {
+  const levelEmoji: Record<string, string> = { High: "🔴", Moderate: "🟡", Low: "🟢", Unknown: "⚪" };
+  const keys: Array<keyof Omit<RiskAttribution, "overall" | "factor_regression">> = [
+    "market_risk", "sector_risk", "concentration_risk", "tail_risk", "style_risk", "macro_risk",
+  ];
+  const titles: Record<string, string> = {
+    market_risk: "Market Risk", sector_risk: "Sector Risk",
+    concentration_risk: "Concentration Risk", tail_risk: "Tail Risk",
+    style_risk: "Style / Factor Risk", macro_risk: "Macro Risk",
+  };
+  const rows = keys
+    .map((k) => {
+      const item = attr[k];
+      if (!item) return "";
+      const e = levelEmoji[item.risk_level] ?? "⚪";
+      return `| ${titles[k]} | ${e} ${item.risk_level} | ${item.summary || "—"} |`;
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  return `## Risk Attribution
+
+| Driver | Level | Summary |
+|--------|-------|---------|
+${rows}
+`;
 }
 
 function buildMarkdownReport(result: AnalyzePortfolioResponse): string {
@@ -19,7 +47,13 @@ function buildMarkdownReport(result: AnalyzePortfolioResponse): string {
   });
 
   const holdingsTable = holdings
-    .map((h) => `| ${h.ticker} | ${h.profile.name || "—"} | ${h.profile.sector || "—"} | ${h.weight_pct} |`)
+    .map((h) => {
+      const secType = h.profile.security_type || "Equity";
+      const sectorDisplay = h.profile.sector || "Unknown";
+      const nameDisplay = h.profile.name || h.ticker;
+      const typeTag = secType === "ETF" ? " *(ETF)*" : "";
+      return `| ${h.ticker} | ${nameDisplay}${typeTag} | ${sectorDisplay} | ${h.weight_pct} |`;
+    })
     .join("\n");
 
   const topContribs = [...contrib]
@@ -38,6 +72,10 @@ function buildMarkdownReport(result: AnalyzePortfolioResponse): string {
     m.sharpe_ratio > 1.5 ? "excellent" :
     m.sharpe_ratio > 1.0 ? "good" :
     m.sharpe_ratio > 0.5 ? "moderate" : "below average";
+
+  const attrSection = result.risk_attribution
+    ? "\n---\n\n" + buildAttributionMarkdown(result.risk_attribution)
+    : "";
 
   return `# Portfolio Risk Report
 
@@ -86,6 +124,7 @@ ${topContribs}
 |----------|-------|-----|--------|--------------|
 ${stressRows}
 
+${attrSection}
 ---
 
 ## Disclaimer
@@ -95,6 +134,12 @@ ${stressRows}
 
 function buildAiMarkdown(ai: AiSummary): string {
   const risks = (ai.key_risks ?? []).map((r) => `- ${r}`).join("\n");
+  const attrSection = ai.risk_attribution_takeaway
+    ? `\n## Risk Drivers\n${ai.risk_attribution_takeaway}\n`
+    : "";
+  const factorSection = ai.factor_regression_takeaway
+    ? `\n## Factor Regression\n${ai.factor_regression_takeaway}\n`
+    : "";
   return `# AI Risk Summary
 
 ## Summary
@@ -102,7 +147,7 @@ ${ai.summary ?? ""}
 
 ## Key Risks
 ${risks}
-
+${attrSection}${factorSection}
 ## Stress Period
 ${ai.stress_takeaway ?? ""}
 
@@ -327,6 +372,24 @@ function AiCard({
                     </li>
                   ))}
                 </ul>
+              </div>
+            )}
+
+            {aiSummary.risk_attribution_takeaway && (
+              <div>
+                <p style={eyebrow}>Risk Drivers</p>
+                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                  {aiSummary.risk_attribution_takeaway}
+                </p>
+              </div>
+            )}
+
+            {aiSummary.factor_regression_takeaway && (
+              <div>
+                <p style={eyebrow}>Factor Regression</p>
+                <p style={{ color: "var(--muted)", fontSize: 12, lineHeight: 1.6, margin: 0 }}>
+                  {aiSummary.factor_regression_takeaway}
+                </p>
               </div>
             )}
 

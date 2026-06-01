@@ -43,10 +43,11 @@ export default function PortfolioComposition({ holdings }: { holdings: EnrichedH
               />
             </div>
 
-            {h.profile.sector && (
+            {(h.profile.sector || h.profile.security_type) && (
               <p style={{ color: "var(--faint)", fontSize: 11, marginTop: 3 }}>
-                {h.profile.sector}
+                {h.profile.sector || "Unknown"}
                 {h.profile.industry ? ` · ${h.profile.industry}` : ""}
+                {h.profile.security_type === "ETF" ? " · ETF" : ""}
               </p>
             )}
           </div>

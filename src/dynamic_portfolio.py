@@ -529,4 +529,7 @@ def analyze_portfolio(holdings: list[dict[str, Any]]) -> dict[str, Any]:
         "company_risk_evidence":  compute_company_risk_evidence(weights),
         "failed_tickers":         failed,
         "warnings":               warnings,
+        # Internal — not JSON-serializable; extracted and popped by the API layer
+        "_returns_df":            returns_df,
+        "_port_returns":          port_returns,
     }

@@ -16,6 +16,7 @@ import RiskContributorCards from "@/components/RiskContributorCards";
 import StressScenarioCards from "@/components/StressScenarioCards";
 import CompanyEvidenceAccordion from "@/components/CompanyEvidenceAccordion";
 import RiskReportPreview from "@/components/RiskReportPreview";
+import RiskAttributionSection from "@/components/RiskAttributionSection";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -405,31 +406,42 @@ function ResultPanel({ result }: { result: AnalyzePortfolioResponse }) {
         <ContactBlock />
       </div>
 
-      {/* Warnings */}
-      {result.warnings.length > 0 && (
-        <div
-          style={{
-            background: "var(--warn-bg)",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            padding: "10px 14px",
-            marginBottom: 22,
-          }}
-        >
-          {result.warnings.map((w, i) => {
-            // Truncate long raw DB/SQL errors to a clean one-liner
-            const isDbError = w.toLowerCase().includes("database save failed");
-            const display = isDbError
-              ? "Database save failed. Analysis results are still shown."
-              : w;
-            return (
+      {/* Warnings — collapse noisy DB/company errors into a single line */}
+      {result.warnings.length > 0 && (() => {
+        const dbRelated = result.warnings.filter(w =>
+          w.toLowerCase().includes("database") ||
+          w.toLowerCase().includes("company upsert") ||
+          w.toLowerCase().includes("db")
+        );
+        const other = result.warnings.filter(w =>
+          !w.toLowerCase().includes("database") &&
+          !w.toLowerCase().includes("company upsert") &&
+          !w.toLowerCase().includes("db")
+        );
+        const displayed = [
+          ...(dbRelated.length > 0
+            ? ["Database save skipped (DATABASE_URL not configured locally). Analysis results are still shown."]
+            : []),
+          ...other,
+        ];
+        return (
+          <div
+            style={{
+              background: "var(--warn-bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "10px 14px",
+              marginBottom: 22,
+            }}
+          >
+            {displayed.map((w, i) => (
               <p key={i} style={{ color: "var(--warning)", fontSize: 12, lineHeight: 1.5 }}>
-                {display}
+                {w}
               </p>
-            );
-          })}
-        </div>
-      )}
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Row 1: Risk Metrics ── */}
       <div style={{ marginBottom: 24 }}>
@@ -463,7 +475,18 @@ function ResultPanel({ result }: { result: AnalyzePortfolioResponse }) {
         )}
       </div>
 
-      {/* ── Row 3: Stress Scenarios ── */}
+      {/* ── Row 3: Risk Attribution ── */}
+      {result.risk_attribution && (
+        <div style={{ marginBottom: 24 }}>
+          <Sec
+            title="Risk Attribution"
+            sub="What is driving this portfolio's risk?"
+          />
+          <RiskAttributionSection attribution={result.risk_attribution} />
+        </div>
+      )}
+
+      {/* ── Row 4: Stress Scenarios ── */}
       {hasStress && (
         <div style={{ marginBottom: 24 }}>
           <Sec
@@ -474,7 +497,7 @@ function ResultPanel({ result }: { result: AnalyzePortfolioResponse }) {
         </div>
       )}
 
-      {/* ── Row 4: Company Risk Evidence ── */}
+      {/* ── Row 5: Company Risk Evidence ── */}
       {hasEvidence && (
         <div style={{ marginBottom: 24 }}>
           <Sec
@@ -485,7 +508,7 @@ function ResultPanel({ result }: { result: AnalyzePortfolioResponse }) {
         </div>
       )}
 
-      {/* ── Row 5: Risk Report ── */}
+      {/* ── Row 6: Risk Report ── */}
       <div style={{ marginBottom: 24 }}>
         <Sec title="Risk Report" />
         <RiskReportPreview result={result} />

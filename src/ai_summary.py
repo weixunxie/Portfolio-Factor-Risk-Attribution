@@ -37,9 +37,12 @@ STRICT RULES — you must never violate these:
 6. Be concise and precise. Do not pad the response.
 7. When company risk evidence is missing or limited for a ticker, \
    acknowledge that explicitly rather than speculating.
-8. Focus exclusively on: risk concentration, volatility, drawdown, \
-   historical stress-period behavior, and source-grounded company risk disclosures.
-9. Always return valid JSON matching the schema described by the user prompt.
+8. Focus on: what is driving portfolio risk (market, sector, concentration, tail), \
+   historical stress behavior, and source-grounded company risk disclosures.
+9. When risk_attribution data is provided, use it to explain *what is driving risk* \
+   rather than only listing metrics. Only discuss attribution dimensions that are \
+   marked available=true in the input.
+10. Always return valid JSON matching the schema described by the user prompt.
 """
 
 
@@ -121,19 +124,68 @@ def _build_user_prompt(analysis_result: dict[str, Any]) -> str:
         else:
             slim_evidence[ticker] = "(no evidence)"
 
+    # ── simplify risk attribution (only available dimensions) ─────────────
+    attribution = analysis_result.get("risk_attribution") or {}
+    slim_attribution: dict[str, Any] = {}
+    for key in ("market_risk", "sector_risk", "concentration_risk", "tail_risk", "style_risk"):
+        dim = attribution.get(key) or {}
+        if dim.get("available"):
+            slim_attribution[key] = {
+                "risk_level": dim.get("risk_level"),
+                "summary":    (dim.get("summary") or "")[:300],
+                "drivers":    (dim.get("drivers") or [])[:3],
+            }
+    overall_attr = (attribution.get("overall") or {})
+    if overall_attr:
+        slim_attribution["overall"] = {
+            "risk_level":       overall_attr.get("overall_risk_level"),
+            "dominant_drivers": overall_attr.get("dominant_drivers", []),
+            "summary":          (overall_attr.get("summary") or "")[:300],
+        }
+
+    # ── simplify factor regression ─────────────────────────────────────────
+    fr = attribution.get("factor_regression") or {}
+    slim_factor: dict[str, Any] = {}
+    if fr.get("available"):
+        slim_factor = {
+            "r_squared":     fr.get("r_squared"),
+            "adj_r_squared": fr.get("adj_r_squared"),
+            "n_obs":         fr.get("n_obs"),
+            "factors": [
+                {
+                    "label":          f.get("label"),
+                    "beta":           f.get("beta"),
+                    "p_value":        f.get("p_value"),
+                    "significant":    f.get("significant"),
+                    "interpretation": f.get("interpretation"),
+                }
+                for f in (fr.get("factors") or [])
+            ],
+            "model_note": (fr.get("model_note") or "")[:200],
+        }
+
     payload = {
         "holdings":               slim_holdings,
         "risk_metrics":           slim_metrics,
         "top_risk_contributors":  slim_contrib,
         "stress_analysis":        slim_stress,
         "company_risk_evidence":  slim_evidence,
+        "risk_attribution":       slim_attribution,
+        "factor_regression":      slim_factor,
         "warnings":               warnings,
     }
 
     schema = (
         '{\n'
-        '  "summary": "<2-4 sentence overview of portfolio risk profile>",\n'
+        '  "summary": "<2-4 sentence overview including what is driving portfolio risk>",\n'
         '  "key_risks": ["<risk 1>", "<risk 2>", "<risk 3>"],\n'
+        '  "risk_attribution_takeaway": "<1-2 sentences on the main risk drivers: market '
+        'sensitivity, concentration, sector, tail. Only reference dimensions present in '
+        'risk_attribution.>",\n'
+        '  "factor_regression_takeaway": "<1-2 sentences on proxy factor exposure regression '
+        'if factor_regression is available. Only reference statistically significant proxy betas '
+        'and R². TLT is a duration/rates proxy — do not claim direct 10Y yield sensitivity. '
+        'If not available, leave empty. This is proxy-based regression, not formal factor modeling.>",\n'
         '  "stress_takeaway": "<1-2 sentences on historical stress behavior>",\n'
         '  "evidence_takeaway": "<1-2 sentences on company-level SEC risk evidence, '
         'or note if limited>",\n'
@@ -206,6 +258,8 @@ def generate_portfolio_risk_summary(analysis_result: dict[str, Any]) -> dict[str
         # Ensure all expected keys exist with sensible defaults
         result.setdefault("summary", "")
         result.setdefault("key_risks", [])
+        result.setdefault("risk_attribution_takeaway", "")
+        result.setdefault("factor_regression_takeaway", "")
         result.setdefault("stress_takeaway", "")
         result.setdefault("evidence_takeaway", "")
 

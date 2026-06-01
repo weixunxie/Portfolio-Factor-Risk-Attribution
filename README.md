@@ -1,9 +1,8 @@
 # AI Portfolio Risk Assistant
 
-**AI Portfolio Risk Assistant** is an AI-powered portfolio risk research system that combines
-quantitative risk analytics, SEC filing retrieval, and portfolio-level evidence generation.
-The system helps users review concentration risk, stress-period exposure, top risk contributors,
-and company-specific risk disclosures for a given portfolio.
+**AI Portfolio Risk Assistant** is an interactive portfolio risk attribution and stress-testing
+system that combines traditional risk metrics with factor-style risk attribution, concentration
+diagnostics, stress/tail-risk analysis, and AI-generated explanations grounded in computed evidence.
 
 **For educational and research purposes only. Not investment advice.**
 
@@ -11,19 +10,68 @@ and company-specific risk disclosures for a given portfolio.
 
 ## Portfolio Description
 
-Built an end-to-end AI-native portfolio risk analytics system that combines FastAPI, Next.js,
-PostgreSQL, Qdrant, SEC EDGAR data, and quantitative risk metrics to support portfolio-level
-risk review. The system calculates VaR/CVaR, drawdown, volatility, stress-period performance,
-and top risk contributors, then retrieves source-grounded company risk evidence from SEC filings
-to generate a research-style risk summary.
+An interactive risk analytics system that decomposes portfolio risk into market, sector, style,
+macro, concentration, and tail-risk drivers, then generates an evidence-grounded AI risk report.
+Built with FastAPI, Next.js, PostgreSQL, Qdrant, SEC EDGAR data, and quantitative risk metrics
+to support portfolio-level risk review.
+
+---
+
+## New: Proxy Factor Exposure Regression
+
+The dashboard now includes a proxy-based factor exposure regression as a sub-section of Risk Attribution.
+
+**Model:** OLS regression of portfolio daily returns on three market proxy ETF returns:
+
+| Proxy factor | ETF | What it captures |
+|---|---|---|
+| Broad equity market | SPY daily returns | General equity market sensitivity |
+| Growth / technology | QQQ daily returns | Tech and growth-stock cycle exposure |
+| Duration / rates | TLT daily returns | Interest rate regime sensitivity (directional proxy — not a direct 10Y yield measure) |
+
+**Output per factor:** beta coefficient, t-statistic, p-value, and a plain-English interpretation. Only factors with p < 0.05 are marked as statistically significant.
+
+**Model fit:** R², Adjusted R², VIF per factor, and observation count are reported. A collinearity warning fires when any factor VIF exceeds 10 (SPY and QQQ are often highly correlated).
+
+**What this is:**
+Proxy-based regression using accessible, liquid market ETF return series. Each ETF captures a specific market regime directionally. This is not formal academic factor modeling — the proxies are not long-short constructed portfolios, and the regression does not isolate specific risk premia.
+
+**What this is not:**
+Not a formal factor model. TLT captures duration/rate-regime dynamics as a proxy only — it does not measure 10Y Treasury yield changes directly, and rate sensitivity should be read as directional, not precise.
+
+**Planned future extension:** VIX daily changes (volatility-shock proxy) will be added when reliable `^VIX` daily data is available in the pipeline. Until then, volatility-shock sensitivity is not captured by this regression.
+
+---
+
+## New: Risk Attribution Layer
+
+The dashboard now goes beyond reporting metrics — it answers **what is driving this portfolio's risk**.
+
+| Driver | What it measures |
+|--------|-----------------|
+| **Market Risk** | Portfolio beta relative to SPY; how much broad equity moves amplify gains and losses |
+| **Sector Risk** | Sector weight concentration; flags over-reliance on any single sector |
+| **Style / Factor Risk** | Simplified style classification: high-beta, high-volatility, growth/tech-heavy, or defensive |
+| **Macro Risk** | Sensitivity to QQQ (tech/growth proxy) and TLT (rate/duration proxy) |
+| **Concentration Risk** | HHI score, top-1 / top-3 / top-5 position weights, number of holdings |
+| **Tail Risk** | VaR / CVaR interpretation, max drawdown, worst-day analysis, CVaR/VaR ratio |
+
+Each dimension returns:
+- A risk level: **Low / Moderate / High**
+- Key supporting metrics
+- A plain-English explanation
+- Individual driver bullets
+
+The AI Risk Report is automatically enriched with attribution data — it now explains *why* risk is elevated, not just *how much*.
 
 ---
 
 ## What This Project Is
 
-- Portfolio risk diagnostics system
+- Portfolio risk attribution and stress-testing system
+- Quant-style risk driver analysis dashboard
 - AI-assisted investment research workflow
-- Quantitative risk analytics dashboard
+- Concentration, tail-risk, and factor exposure diagnostics
 - SEC filing evidence retrieval system
 - End-to-end FinTech/AI engineering project
 
@@ -42,11 +90,12 @@ to generate a research-style risk summary.
 ```
 User portfolio input
   → price and company data retrieval
-  → risk metric calculation
+  → risk metric calculation (VaR, CVaR, Sharpe, drawdown)
+  → risk attribution (market beta, sector, concentration, tail, style, macro)
   → stress scenario analysis
   → top risk contributor identification
   → SEC filing evidence retrieval
-  → AI-style risk report generation
+  → AI risk report grounded in computed attribution
   → optional database persistence
 ```
 
@@ -56,11 +105,16 @@ User portfolio input
 
 | Question | Module |
 |---|---|
+| What is driving this portfolio's risk? | Risk Attribution layer (6 dimensions) |
+| Is the portfolio market-sensitive or defensive? | Market Risk (portfolio beta vs SPY) |
+| Is the portfolio concentrated in a single sector? | Sector Risk (sector weight breakdown) |
+| How concentrated is the portfolio by position? | Concentration Risk (HHI, top-N weights) |
+| What is the tail-risk exposure? | Tail Risk (VaR, CVaR, max drawdown) |
 | Where is this portfolio's risk concentrated? | Top risk contributors (weight × volatility) |
 | Which assets contribute most to downside risk? | Correlation with portfolio, worst-day returns |
 | How would this portfolio have behaved during historical stress periods? | Stress scenario analysis |
 | What official SEC risk disclosures are relevant to the current holdings? | Qdrant vector retrieval over 10-K filings |
-| What risk themes should an analyst or investor monitor? | Research-style AI risk report |
+| What risk themes should an analyst or investor monitor? | AI risk report grounded in attribution + evidence |
 
 The system does **not** answer: what to buy tomorrow, which stock will go up, or what trading
 strategy to use.
@@ -72,19 +126,25 @@ strategy to use.
 1. **Dynamic portfolio input** — accepts any user-defined portfolio via weight %, dollar amount, or share count; normalizes to weights before analysis.
 2. **Price data retrieval** — fetches historical daily closing prices per ticker from Alpha Vantage, a local cache, or yfinance fallback (2018 to today).
 3. **Risk metrics** — calculates the following at the portfolio level:
-   - Annualized return
-   - Annualized volatility
+   - Annualized return and volatility
    - Sharpe ratio (risk-free rate = 0%)
    - Maximum drawdown
    - Value at Risk (VaR) at 95% and 99% confidence
-   - Conditional Value at Risk (CVaR) at 95% and 99% confidence
-4. **Top risk contributors** — ranks each asset by weight × volatility contribution, correlation with portfolio returns, and average return on the portfolio's five worst trading days.
-5. **Stress-period analysis** — evaluates portfolio behavior during two historical stress windows:
+   - Conditional Value at Risk (CVaR / Expected Shortfall) at 95% and 99%
+4. **Risk attribution** — decomposes portfolio risk across six dimensions:
+   - Market Risk: portfolio beta and R² vs SPY
+   - Sector Risk: sector weight breakdown and concentration flag
+   - Style / Factor Risk: high-beta / high-vol / growth classification
+   - Macro Risk: QQQ (tech/growth) and TLT (rate/duration) correlation
+   - Concentration Risk: HHI, top-1 / top-3 / top-5 weights
+   - Tail Risk: VaR/CVaR interpretation, worst-day analysis, CVaR/VaR ratio
+5. **Top risk contributors** — ranks each asset by weight × volatility contribution, correlation with portfolio returns, and average return on the portfolio's five worst trading days.
+6. **Stress-period analysis** — evaluates portfolio behavior during two historical stress windows:
    - COVID Crash (2020-02-19 to 2020-03-23)
    - 2022 Rate-Hike Selloff (2022-01-03 to 2022-10-14)
-6. **Company risk evidence** — retrieves source-grounded risk factor excerpts from SEC 10-K filings using Qdrant vector search.
-7. **Research-style risk report** — generates a structured markdown memo summarizing portfolio-level and company-level risk findings.
-8. **Database persistence** — optionally saves portfolio, holdings, company data, and full analysis snapshots to PostgreSQL/Supabase.
+7. **Company risk evidence** — retrieves source-grounded risk factor excerpts from SEC 10-K filings using Qdrant vector search.
+8. **AI risk report** — generates a structured risk summary grounded in computed attribution data; explains *what is driving risk*, not just *how much*.
+9. **Database persistence** — optionally saves portfolio, holdings, company data, and full analysis snapshots to PostgreSQL/Supabase.
 
 ---
 
