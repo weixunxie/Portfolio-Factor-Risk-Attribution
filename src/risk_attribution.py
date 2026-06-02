@@ -894,9 +894,10 @@ def _interpret_factor(ticker: str, beta: float, significant: bool) -> str:
         return "Mild inverse growth exposure"
 
     if ticker == "TLT":
-        if beta > 0.15:  return "Positive duration exposure (benefits from falling rates)"
-        if beta < -0.15: return "Negative duration exposure (vulnerable to rising rates)"
-        return "Minimal duration sensitivity detected"
+        if beta > 0.15:  return "Positive duration/rates proxy exposure (benefits from falling rates)"
+        if beta < -0.15: return "Negative duration/rates proxy exposure (vulnerable to rising rates)"
+        # significant but small absolute value — be precise, not misleading
+        return "Statistically detectable but economically small duration/rates proxy exposure"
 
     if ticker == "^VIX":
         if beta < -0.5:  return "Vulnerable to volatility spikes"
@@ -909,6 +910,7 @@ def _interpret_factor(ticker: str, beta: float, significant: bool) -> str:
 def calculate_factor_regression(
     port_returns: pd.Series,
     returns_df: pd.DataFrame,
+    weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """
     Proxy Factor Exposure Regression: OLS of portfolio daily returns on
@@ -960,29 +962,29 @@ def calculate_factor_regression(
                 "warnings": [], "model_note": "",
             }
 
-        # ── Align on common dates ──────────────────────────────────────────
-        common = port_returns.index
-        for s in factor_series.values():
-            common = common.intersection(s.index)
-        common = common.sort_values().dropna()
+        factor_names = list(factor_series.keys())
 
-        if len(common) < _MIN_OBS:
+        # ── Align on common dates, then drop rows with any NaN values ─────
+        # index.intersection() handles missing dates; explicit dropna() handles
+        # NaN values within the data (possible for freshly-fetched tickers).
+        aligned = pd.DataFrame({"port": port_returns})
+        for t in factor_names:
+            aligned[t] = factor_series[t]
+        aligned = aligned.dropna()   # value-level NaN removal
+
+        if len(aligned) < _MIN_OBS:
             return {
                 "available": False,
-                "reason":    f"Only {len(common)} overlapping observations — need ≥{_MIN_OBS}.",
+                "reason":    f"Only {len(aligned)} clean observations after NaN removal — need ≥{_MIN_OBS}.",
                 "factors":   [], "r_squared": None, "adj_r_squared": None,
-                "n_obs":     int(len(common)), "condition_number": None,
+                "n_obs":     int(len(aligned)), "condition_number": None,
                 "missing_factors": missing, "warnings": [], "model_note": "",
             }
 
-        y = port_returns.loc[common].values.astype(float)
-
-        factor_names = list(factor_series.keys())
-        X_factors = np.column_stack(
-            [factor_series[t].loc[common].values.astype(float) for t in factor_names]
-        )
-        X = np.column_stack([np.ones(len(y)), X_factors])   # prepend intercept
-        n, k = X.shape
+        y         = aligned["port"].values.astype(float)
+        X_factors = aligned[factor_names].values.astype(float)
+        X         = np.column_stack([np.ones(len(y)), X_factors])   # prepend intercept
+        n, k      = X.shape
 
         # ── OLS ───────────────────────────────────────────────────────────
         try:
@@ -1082,14 +1084,36 @@ def calculate_factor_regression(
                     )
 
         warnings: list[str] = []
-        if multicollinear:
-            vif_str = ", ".join(f"{t} VIF={v}" for t, v in vifs.items() if v > 10)
+
+        # Collinearity note: always shown when both SPY and QQQ are in the model,
+        # because their returns are structurally correlated (~0.95) regardless of
+        # whether VIF exceeds any particular threshold.
+        if "SPY" in factor_names and "QQQ" in factor_names:
+            spy_vif = vifs.get("SPY", 0)
+            qqq_vif = vifs.get("QQQ", 0)
             warnings.append(
-                f"Factor collinearity detected ({vif_str}). "
-                "SPY and QQQ are highly correlated — their individual betas are "
-                "interdependent and should be read together, not in isolation. "
-                "The R² and combined factor betas are more informative than any single coefficient."
+                f"SPY and QQQ are both included as proxy factors (VIF: SPY={spy_vif}, QQQ={qqq_vif}). "
+                "Their returns are highly correlated, so individual betas are interdependent — "
+                "the QQQ coefficient tends to absorb the combined market and growth signal. "
+                "Interpret joint model fit (R²) rather than SPY and QQQ coefficients in isolation."
             )
+
+        # Direct-holdings overlap note
+        if weights:
+            proxy_tickers = set(factor_names)
+            held_proxies = {
+                t: round(w * 100, 1)
+                for t, w in weights.items()
+                if t.upper() in proxy_tickers
+            }
+            if held_proxies:
+                held_str = ", ".join(f"{t} ({pct}%)" for t, pct in held_proxies.items())
+                warnings.append(
+                    f"This portfolio holds the proxy ETFs directly: {held_str}. "
+                    "Factor regression partially reflects actual holdings in these ETFs, "
+                    "which may inflate R² and distort individual coefficient interpretation."
+                )
+
         if missing:
             warnings.append(f"Factor data unavailable for: {', '.join(missing)}.")
 
@@ -1105,10 +1129,12 @@ def calculate_factor_regression(
             "missing_factors": missing,
             "warnings":        warnings,
             "model_note": (
-                "Proxy Factor Exposure Regression using market proxy ETF returns. "
-                "SPY = broad equity proxy · QQQ = growth/technology proxy · "
-                "TLT = duration/rates proxy (not a direct 10Y yield measure). "
-                "p < 0.05 indicates statistically detectable sensitivity to a proxy factor. "
+                "Proxy Factor Exposure Regression using market proxy ETF returns "
+                "(SPY = broad equity proxy, QQQ = growth/technology proxy, "
+                "TLT = duration/rates proxy -- not a direct 10Y yield measure). "
+                "This is proxy-based regression, not a formal academic factor model. "
+                "Coefficients may be affected by multicollinearity between SPY and QQQ. "
+                "p < 0.05 indicates statistically detectable sensitivity to a proxy factor. "
                 "Volatility-shock sensitivity (VIX proxy) is planned as a future extension."
             ),
         }
@@ -1150,7 +1176,7 @@ def compute_risk_attribution(
     macro        = calculate_macro_risk_exposure(weights, df, pr)
     overall      = generate_risk_driver_summary(market, sector, style, macro, concentration, tail)
 
-    factor_regression = calculate_factor_regression(pr, df)
+    factor_regression = calculate_factor_regression(pr, df, weights=weights)
 
     return {
         "market_risk":        market,

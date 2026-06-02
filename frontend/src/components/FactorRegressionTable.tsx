@@ -254,34 +254,45 @@ export default function FactorRegressionTable({
             N = <strong style={{ color: "var(--text)" }}>{data.n_obs.toLocaleString()}</strong>
           </span>
         )}
-        {data.condition_number != null && data.condition_number > 30 && (
-          <span
-            style={{
-              color: "var(--warning)", fontSize: 10.5,
-              border: "1px solid rgba(234,179,8,0.3)", borderRadius: 3,
-              padding: "1px 6px", background: "rgba(234,179,8,0.06)",
-            }}
-          >
-            ⚠ high inter-factor correlation
-          </span>
-        )}
       </div>
 
-      {/* Warnings */}
+      {/* Informational notes — muted, not alarming */}
       {data.warnings && data.warnings.length > 0 && (
-        <div style={{ borderTop: "1px solid var(--border-lt)", padding: "6px 14px" }}>
+        <div
+          style={{
+            borderTop: "1px solid var(--border-lt)",
+            padding:   "7px 14px",
+            display:   "flex",
+            flexDirection: "column",
+            gap: 3,
+          }}
+        >
           {data.warnings.map((w, i) => (
-            <p key={i} style={{ color: "var(--warning)", fontSize: 11, lineHeight: 1.5, margin: "2px 0" }}>
+            <p
+              key={i}
+              style={{
+                color:      "var(--faint)",
+                fontSize:   10.5,
+                lineHeight: 1.55,
+                margin:     0,
+              }}
+            >
               {w}
             </p>
           ))}
         </div>
       )}
 
-      {/* Model note / disclaimer */}
+      {/* Model note */}
       {data.model_note && (
-        <div style={{ borderTop: "1px solid var(--border-lt)", padding: "6px 14px" }}>
-          <p style={{ color: "var(--faint)", fontSize: 10.5, lineHeight: 1.5, margin: 0 }}>
+        <div
+          style={{
+            borderTop:  "1px solid var(--border-lt)",
+            padding:    "6px 14px",
+            background: "var(--bg)",
+          }}
+        >
+          <p style={{ color: "var(--faint)", fontSize: 10.5, lineHeight: 1.5, margin: 0, fontStyle: "italic" }}>
             {data.model_note}
           </p>
         </div>
