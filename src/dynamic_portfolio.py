@@ -18,6 +18,7 @@ This module never returns buy/sell recommendations or investment advice.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -480,20 +481,27 @@ def compute_company_risk_evidence(
         reverse=True,
     )[:5]
 
-    evidence: dict[str, Any] = {}
-    for ticker, _ in candidates:
+    def _query_one(ticker: str) -> tuple[str, Any]:
         try:
             hits = qdrant_ingestion.retrieve_company_risks(
                 query=query, tickers=[ticker], top_k=top_k
             )
-            evidence[ticker] = hits if hits else {
+            return ticker, hits if hits else {
                 "message": (
                     f"No company risk evidence available yet for {ticker}. "
                     "Run SEC extraction and Qdrant ingestion for this ticker first."
                 )
             }
         except Exception as exc:
-            evidence[ticker] = {"message": f"Qdrant query failed for {ticker}: {exc}"}
+            return ticker, {"message": f"Qdrant query failed for {ticker}: {exc}"}
+
+    if not candidates:
+        return {}
+
+    evidence: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+        for ticker, result in pool.map(lambda t: _query_one(t[0]), candidates):
+            evidence[ticker] = result
 
     return evidence
 

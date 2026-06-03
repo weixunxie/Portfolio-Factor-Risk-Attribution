@@ -225,6 +225,9 @@ export const generateRiskSummary = (result: AnalyzePortfolioResponse) =>
     warnings:               result.warnings,
   });
 
+export const warmupBackend = () =>
+  fetch(`${API_BASE}/health`).catch(() => {});
+
 // Static endpoints kept for backward compatibility
 export interface MarkdownResponse {
   markdown: string;

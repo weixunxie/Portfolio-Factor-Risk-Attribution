@@ -6,6 +6,7 @@ Run with:  uvicorn api.main:app --host 0.0.0.0 --port $PORT
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -532,24 +533,31 @@ def analyze_portfolio(body: PortfolioInput):
         for t, w in norm_weights.items()
     ]
 
-    # ── company profiles (errors are isolated — never abort the endpoint) ────
+    # ── company profiles (fetched in parallel — errors are isolated) ──────────
+    def _fetch_one_profile(h: "Holding") -> tuple[str, dict]:
+        if h.ticker == "CASH":
+            return h.ticker, {
+                "ticker": "CASH",
+                "name": "Cash / Money Market",
+                "sector": "Cash",
+                "industry": "Cash Equivalent",
+                "source": "synthetic",
+            }
+        try:
+            return h.ticker, get_company_profile(h.ticker)
+        except Exception as exc:
+            return h.ticker, {"error": str(exc)}
+
+    profile_map: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(len(resolved_holdings), 10)) as pool:
+        futures = {pool.submit(_fetch_one_profile, h): h for h in resolved_holdings}
+        for future in as_completed(futures):
+            ticker, profile = future.result()
+            profile_map[ticker] = profile
+
     enriched_holdings = []
     for h in resolved_holdings:
-        try:
-            if h.ticker == "CASH":
-                # Synthetic asset — no external data needed
-                profile = {
-                    "ticker": "CASH",
-                    "name": "Cash / Money Market",
-                    "sector": "Cash",
-                    "industry": "Cash Equivalent",
-                    "source": "synthetic",
-                }
-            else:
-                profile = get_company_profile(h.ticker)
-        except Exception as exc:
-            profile = {"error": str(exc)}
-
+        profile = profile_map.get(h.ticker, {})
         enriched_holdings.append(
             {
                 "ticker": h.ticker,

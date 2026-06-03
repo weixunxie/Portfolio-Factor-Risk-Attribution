@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   analyzePortfolio,
+  warmupBackend,
   type AnalyzePortfolioResponse,
   type HoldingInput,
   type InputMode,
@@ -523,6 +524,8 @@ export default function DashboardPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<AnalyzePortfolioResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => { warmupBackend(); }, []);
 
   const handleAnalyze = useCallback(async (
     holdings: HoldingInput[],
