@@ -6,6 +6,7 @@ Run with:  uvicorn api.main:app --host 0.0.0.0 --port $PORT
 
 import os
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -98,8 +99,25 @@ def root():
 
 # ── static MVP endpoints (unchanged) ──────────────────────────────────────────
 
+_warmup_started = False
+_warmup_lock = threading.Lock()
+
+
 @app.get("/health")
 def health():
+    # Frontend pings /health on page load. Use it to eagerly materialize the
+    # embedding model once, in the background, so the parallel per-ticker queries
+    # in /analyze-portfolio reuse one ready model instead of racing to build it
+    # (the meta-tensor bug). Non-blocking so the liveness probe stays fast.
+    global _warmup_started
+    if not _warmup_started:
+        with _warmup_lock:
+            if not _warmup_started:
+                _warmup_started = True
+                import qdrant_ingestion
+                threading.Thread(
+                    target=qdrant_ingestion.warm_embedding_model, daemon=True
+                ).start()
     return {"status": "ok"}
 
 

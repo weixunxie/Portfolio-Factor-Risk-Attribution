@@ -23,6 +23,7 @@ python src/qdrant_ingestion.py AAPL
 import os
 import re
 import sys
+import threading
 import uuid
 from pathlib import Path
 
@@ -64,6 +65,44 @@ CHUNK_OVERLAP_WORDS = 100  # overlap between consecutive chunks
 
 # Fixed UUID namespace — never change this; it makes point IDs deterministic
 _CHUNK_NS = uuid.UUID("7e4bda4e-3f6e-4b8a-9c2d-1a5f8e3b7d9c")
+
+
+# ── Embedding model singleton ──────────────────────────────────────────────────
+# The SentenceTransformer must be built exactly once. retrieve_company_risks runs
+# concurrently (one thread per ticker in compute_company_risk_evidence's pool),
+# and constructing the model from multiple threads at the same time races through
+# transformers/accelerate's meta-device init, leaving some copies on the `meta`
+# device — which then fails with "Cannot copy out of meta tensor; no data!".
+# A lock-guarded, double-checked singleton guarantees a single fully-materialized
+# model that every thread reuses. device="cpu" forces real weights on CPU (Railway
+# has no GPU) and avoids the meta -> device .to() path that triggers the error.
+_model: "SentenceTransformer | None" = None
+_model_lock = threading.Lock()
+
+
+def _get_model() -> SentenceTransformer:
+    """Return the process-wide SentenceTransformer, building it once under a lock."""
+    global _model
+    if _model is None:
+        with _model_lock:
+            if _model is None:  # double-checked: another thread may have built it
+                print(f"[Qdrant] Loading embedding model '{EMBEDDING_MODEL}' (cpu) ...")
+                _model = SentenceTransformer(EMBEDDING_MODEL, device="cpu")
+    return _model
+
+
+def warm_embedding_model() -> bool:
+    """Eagerly materialize the embedding model before any concurrent query.
+
+    Safe to call repeatedly and from a warmup/health endpoint. Returns True on
+    success; never raises so it cannot break a liveness probe.
+    """
+    try:
+        _get_model()
+        return True
+    except Exception as exc:  # pragma: no cover - defensive warmup
+        print(f"[Qdrant] Embedding model warmup failed: {exc}")
+        return False
 
 
 # ── Qdrant helpers ─────────────────────────────────────────────────────────────
@@ -193,8 +232,7 @@ def ingest_ticker_risk_factors(ticker: str) -> dict:
             "error": "Document body is empty after stripping frontmatter",
         }
 
-    print(f"[Qdrant] Loading embedding model '{EMBEDDING_MODEL}' ...")
-    model = SentenceTransformer(EMBEDDING_MODEL)
+    model = _get_model()
 
     print(f"[Qdrant] Embedding {len(chunks)} chunks for {t} ...")
     embeddings = model.encode(chunks, show_progress_bar=False)
@@ -246,7 +284,7 @@ def retrieve_company_risks(
     -------
     List of dicts: {ticker, source_file, source_type, filing_date, chunk_id, text, score}
     """
-    model = SentenceTransformer(EMBEDDING_MODEL)
+    model = _get_model()
     query_vector = model.encode(query).tolist()
 
     client = _get_client()
