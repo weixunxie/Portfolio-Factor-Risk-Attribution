@@ -62,6 +62,8 @@ app = FastAPI(title="Portfolio Risk API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    # Match the Vercel production alias plus any preview deploy hash automatically.
+    allow_origin_regex=r"https://portfolio-factor-risk-attribution.*\.vercel\.app",
     allow_credentials=False,   # no cookies/auth — False is compatible with wildcard too
     allow_methods=["*"],
     allow_headers=["*"],
