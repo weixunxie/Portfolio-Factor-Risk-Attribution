@@ -316,10 +316,12 @@ def fetch_portfolio_returns(
 
     # ── Merge all return series into a single DataFrame ─────────────────────
     if processed_df.empty and not extra_returns:
+        failed_list = ", ".join(failed) if failed else ", ".join(tickers)
         raise ValueError(
-            "Could not fetch price data for any of the requested tickers. "
-            "Ensure data/processed/returns.csv exists (run: python src/data_loader.py "
-            "and python src/portfolio.py) or check your internet connection."
+            f"Could not fetch price data for: {failed_list}. "
+            "Check that each symbol is spelled correctly and is a listed, "
+            "actively-traded security — unlisted, delisted, or private companies "
+            "have no market data."
         )
 
     if processed_df.empty:
