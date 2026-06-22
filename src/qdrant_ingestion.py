@@ -190,6 +190,11 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
             key, _, val = line.partition(":")
             meta[key.strip()] = val.strip()
     body = text[end + 3:].strip()
+    # Drop a leading markdown title line (e.g. "# AAPL — 10-K Risk Factors")
+    # so the document heading does not pollute the first chunk.
+    if body.startswith("#"):
+        nl = body.find("\n")
+        body = body[nl + 1:].lstrip() if nl != -1 else ""
     return meta, body
 
 

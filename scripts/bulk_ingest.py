@@ -87,6 +87,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="only the first N tickers")
     ap.add_argument("--throttle", type=float, default=2.0, help="seconds between tickers")
     ap.add_argument("--timeout", type=int, default=180, help="per-request timeout (s)")
+    ap.add_argument("--force", action="store_true",
+                    help="re-ingest even if the ticker already has evidence")
     args = ap.parse_args()
 
     tickers = [t.upper() for t in args.only] if args.only else load_universe(args.universe)
@@ -101,7 +103,7 @@ def main() -> int:
 
     for i, t in enumerate(tickers, 1):
         prefix = f"[{i}/{len(tickers)}] {t:<6}"
-        if already_ingested(args.base, t, args.timeout):
+        if not args.force and already_ingested(args.base, t, args.timeout):
             counts["skipped"] += 1
             print(f"{prefix} skipped (already has evidence)")
             continue
