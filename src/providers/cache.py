@@ -1,7 +1,13 @@
 """
-Local file-based cache for provider responses.
+Two-tier cache for provider responses.
 
-Files are stored under data/cache/ at the project root.
+Tier 1 (durable): a Postgres provider_cache table (see cache_db.py). Survives
+                  restarts/redeploys on ephemeral hosts like Railway.
+Tier 2 (local):   files under data/cache/ at the project root. Always used for
+                  reads and writes; on ephemeral hosts it is a per-container
+                  scratch tier, locally it is the primary store.
+
+Reads check Postgres first, then fall back to the file. Writes go to both.
 JSON is used for structured data; TXT/MD for filing text.
 Cache keys are sanitised to safe filenames before use.
 """
@@ -10,6 +16,8 @@ import json
 import re
 import time
 from pathlib import Path
+
+from . import cache_db
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 # Walk up: src/providers/ → src/ → project root
@@ -28,13 +36,20 @@ def _cache_path(key: str, fmt: str = "json") -> Path:
     return CACHE_DIR / f"{_safe_key(key)}.{ext}"
 
 
-def cache_exists(key: str, ttl_seconds: int = 86400, fmt: str = "json") -> bool:
-    """Return True if a fresh cache entry exists for *key* within *ttl_seconds*."""
+def _file_fresh(key: str, ttl_seconds: int, fmt: str = "json") -> bool:
+    """Return True if a fresh file-cache entry exists for *key* within TTL."""
     path = _cache_path(key, fmt)
     if not path.exists():
         return False
     age_seconds = time.time() - path.stat().st_mtime
     return age_seconds < ttl_seconds
+
+
+def cache_exists(key: str, ttl_seconds: int = 86400, fmt: str = "json") -> bool:
+    """Return True if a fresh cache entry exists for *key* (either tier)."""
+    if cache_db.db_get(key, ttl_seconds, fmt) is not None:
+        return True
+    return _file_fresh(key, ttl_seconds, fmt)
 
 
 def get_cache(
@@ -45,13 +60,21 @@ def get_cache(
     """
     Return cached data for *key* if it exists and is within TTL, else None.
 
+    Checks the durable Postgres tier first, then the local file tier.
+
     Parameters
     ----------
     key         : cache key string (will be sanitised)
     ttl_seconds : maximum age in seconds before cache is considered stale
     fmt         : "json" returns a dict/list; "txt" returns a raw string
     """
-    if not cache_exists(key, ttl_seconds, fmt):
+    # Tier 1: durable Postgres cache.
+    db_val = cache_db.db_get(key, ttl_seconds, fmt)
+    if db_val is not None:
+        return db_val
+
+    # Tier 2: local file cache.
+    if not _file_fresh(key, ttl_seconds, fmt):
         return None
     path = _cache_path(key, fmt)
     text = path.read_text(encoding="utf-8")
@@ -62,7 +85,10 @@ def get_cache(
 
 def set_cache(key: str, data: "dict | list | str", fmt: str = "json") -> None:
     """
-    Write *data* to the cache under *key*.
+    Write *data* to both cache tiers under *key*.
+
+    The file write always happens; the Postgres write is a no-op when the
+    durable tier is unavailable.
 
     Parameters
     ----------
@@ -77,9 +103,13 @@ def set_cache(key: str, data: "dict | list | str", fmt: str = "json") -> None:
     else:
         path.write_text(str(data), encoding="utf-8")
 
+    # Mirror into the durable tier (no-op if Postgres is unavailable).
+    cache_db.db_set(key, data, fmt)
+
 
 def clear_cache(key: str, fmt: str = "json") -> bool:
-    """Delete a single cache entry. Returns True if the file existed."""
+    """Delete a single cache entry from both tiers. Returns True if the file existed."""
+    cache_db.db_delete(key)
     path = _cache_path(key, fmt)
     if path.exists():
         path.unlink()

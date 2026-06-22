@@ -145,6 +145,29 @@ def database_health():
     return {"status": "ok", "database": "connected"}
 
 
+@app.get("/cache/health")
+def cache_health():
+    """
+    Report the state of the things that make non-demo tickers (e.g. NKE) work
+    reliably in production:
+      - alpha_vantage_key_set : is ALPHA_VANTAGE_API_KEY present in the env?
+      - database_configured   : is DATABASE_URL present?
+      - cache_persistence      : is the durable provider_cache table reachable?
+
+    When cache_persistence is False, the file cache is wiped on every restart,
+    so any ticker not in data/processed/returns.csv must be re-fetched on a cold
+    container — which fails whenever Alpha Vantage / yfinance is unavailable.
+    """
+    import db as _db
+    import providers.cache_db as _cache_db
+
+    return {
+        "alpha_vantage_key_set": bool(os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()),
+        "database_configured":   _db.is_configured(),
+        "cache_persistence":     _cache_db.available(),
+    }
+
+
 @app.get("/risk-summary")
 def risk_summary():
     return _csv_to_records(TABLES / "risk_summary.csv")

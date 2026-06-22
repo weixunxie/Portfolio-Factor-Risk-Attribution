@@ -34,15 +34,20 @@ from metrics import (
     value_at_risk,
     conditional_var,
 )
+from providers.cache import get_cache, set_cache
 
 # ── paths & constants ──────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).parent.parent
 _PROCESSED_RETURNS = _PROJECT_ROOT / "data" / "processed" / "returns.csv"
 _PROCESSED_PRICES  = _PROJECT_ROOT / "data" / "processed" / "prices.csv"
-_PRICE_CACHE_DIR   = _PROJECT_ROOT / "data" / "cache" / "prices"
 
 TRADING_DAYS = 252
 FETCH_START  = "2018-01-01"
+
+# Per-ticker price series are cached through providers.cache (Postgres + file).
+# 24h TTL: refresh at most once per day; survives restarts via the durable tier.
+_PRICE_CACHE_TTL = 86_400
+_PRICE_CACHE_PREFIX = "price_series_"
 
 # Synthetic cash asset — zero daily returns, reduces portfolio volatility
 CASH_TICKER = "CASH"
@@ -90,17 +95,15 @@ def _load_from_processed_returns(
 
 def _load_from_price_cache(ticker: str) -> pd.Series | None:
     """
-    Load a ticker's price CSV written by a previous download (any age).
-    Returns a sorted DatetimeIndex Series or None.
+    Load a ticker's price series from the durable cache (Postgres + file) written
+    by a previous download. Returns a sorted DatetimeIndex Series or None.
     """
-    path = _PRICE_CACHE_DIR / f"{ticker}.csv"
-    if not path.exists():
+    data = get_cache(_PRICE_CACHE_PREFIX + ticker, ttl_seconds=_PRICE_CACHE_TTL)
+    if not isinstance(data, dict) or not data:
         return None
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        s = df.squeeze()
-        if isinstance(s, pd.DataFrame):        # shouldn't happen, be safe
-            s = s.iloc[:, 0]
+        s = pd.Series(data, dtype=float)
+        s.index = pd.to_datetime(s.index)
         s = s.dropna().sort_index()
         s.name = ticker
         print(f"[DataSource] {ticker}: using cached price data ({len(s)} days)")
@@ -148,10 +151,9 @@ def _load_from_alpha_vantage(ticker: str) -> pd.Series | None:
 def _load_from_yfinance(ticker: str) -> pd.Series | None:
     """
     Download adjusted close prices from yfinance back to FETCH_START.
-    On success the result is written to _PRICE_CACHE_DIR for future use.
+    On success the result is written to the durable cache for future use.
     Returns None on failure.
     """
-    _PRICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         raw = yf.download(
             ticker,
@@ -175,9 +177,11 @@ def _load_from_yfinance(ticker: str) -> pd.Series | None:
         close.name = ticker
         close.index = pd.to_datetime(close.index)
 
-        # Cache for future requests
-        cache_path = _PRICE_CACHE_DIR / f"{ticker}.csv"
-        close.to_frame().to_csv(cache_path)
+        # Cache for future requests (durable Postgres tier + local file).
+        set_cache(
+            _PRICE_CACHE_PREFIX + ticker,
+            {d.strftime("%Y-%m-%d"): float(v) for d, v in close.items()},
+        )
 
         print(f"[DataSource] {ticker}: using yfinance fallback ({len(close)} days)")
         return close
