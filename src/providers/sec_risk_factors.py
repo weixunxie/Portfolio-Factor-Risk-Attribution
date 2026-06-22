@@ -124,27 +124,39 @@ def _download_filing_html(url: str, ticker: str) -> "str | None":
 
 # ── Risk Factors section extraction ───────────────────────────────────────────
 
-# Heading patterns — must match a short standalone line (not a sentence)
-_RE_1A_HEADING = re.compile(
-    r"^(?:ITEM|Item)\s+1A\.?\s*(?:RISK\s+FACTORS|Risk\s+Factors)?\.?\s*$",
-    re.IGNORECASE,
-)
-_RE_1A_LOOSE = re.compile(
-    r"1\s*A",
-    re.IGNORECASE,
-)
+# Section start/end markers, matched against whole (stripped) lines so that
+# in-text cross-references (a sentence mentioning "Risk Factors") never match --
+# only standalone headings do. Two start forms are needed because issuers label
+# the section differently:
+#   - standard:           "ITEM 1A." / "Item 1A. Risk Factors"
+#   - thematic (INTC/MS): a bare "Risk Factors" heading (no "Item 1A" string)
+_RE_START = re.compile(r"^(?:item\s+1a\b.*|risk factors\.?)\s*$", re.IGNORECASE)
+# End at the next section heading -- by item number, or by title for layouts
+# that print the title without the item number on the same line.
 _RE_END = re.compile(
-    r"^(?:ITEM|Item)\s+(?:1B|2)[\.\s]",
+    r"^(?:item\s+(?:1b|1c|2)\b.*|unresolved staff comments.*|properties|cybersecurity)\s*$",
     re.IGNORECASE,
 )
+
+# A real Item 1A section is far longer than this. Anything shorter is a TOC
+# entry, a cross-reference, or an "incorporated by reference" stub (some
+# financial issuers, e.g. WFC, carry no risk factors in the 10-K body itself).
+_MIN_SECTION_CHARS = 1_000
 
 
 def _extract_risk_factors(html: str) -> "str | None":
     """
     Parse 10-K HTML and return the Item 1A Risk Factors section as plain text.
 
-    Handles old-style HTML and iXBRL documents.
-    Returns None if the section cannot be located.
+    Splits into lines, finds every standalone section heading, and keeps the
+    longest span from a start heading ("Item 1A" or a bare "Risk Factors") to
+    the next end heading ("Item 1B/1C/2", "Unresolved Staff Comments",
+    "Cybersecurity", "Properties"). The real section dwarfs every TOC entry, so
+    the longest span is the section -- robust across standard, iXBRL, and
+    thematic-heading layouts that defeat per-line "Item 1A" matching.
+
+    Returns None when no usable section is found (e.g. risk factors are
+    incorporated by reference and absent from the 10-K body).
     """
     soup = BeautifulSoup(html, "lxml")
 
@@ -152,72 +164,51 @@ def _extract_risk_factors(html: str) -> "str | None":
     for tag in soup.find_all(["script", "style", "svg"]):
         tag.decompose()
 
-    raw = soup.get_text(separator="\n")
+    text = soup.get_text(separator="\n")
+    # Normalise unicode whitespace that otherwise breaks heading matches
+    text = text.replace("\xa0", " ").replace("​", "").replace(" ", " ")
+    lines = [l.strip() for l in text.split("\n")]
 
-    # Normalise to non-blank lines
-    lines = [l.strip() for l in raw.split("\n")]
-    lines = [l for l in lines if l]
-
-    # ── find start index ──────────────────────────────────────────────────────
-    # Strategy: strict heading match first, then looser match.
-    # Avoid TOC entries: the TOC line is typically very short, and the real
-    # section heading is followed by paragraph text (lines ≥ 40 chars).
-
-    def _has_content_after(idx: int, min_substantial: int = 3) -> bool:
-        window = lines[idx + 1: idx + 20]
-        return sum(1 for l in window if len(l) >= 40) >= min_substantial
-
-    start_idx: "int | None" = None
-
-    # Pass 1: strict heading regex
-    for i, l in enumerate(lines):
-        if _RE_1A_HEADING.match(l) and _has_content_after(i):
-            start_idx = i
-            break
-
-    # Pass 2: looser search (e.g. "ITEM 1A. RISK FACTORS" with extra spaces)
-    if start_idx is None:
-        for i, l in enumerate(lines):
-            if (
-                len(l) < 80
-                and _RE_1A_LOOSE.search(l)
-                and re.search(r"RISK", l, re.I)
-                and _has_content_after(i)
-            ):
-                start_idx = i
-                break
-
-    if start_idx is None:
+    starts = [i for i, l in enumerate(lines) if _RE_START.match(l)]
+    ends = [i for i, l in enumerate(lines) if _RE_END.match(l)]
+    if not starts:
         return None
 
-    # ── find end index ────────────────────────────────────────────────────────
-    end_idx: "int | None" = None
-    for i in range(start_idx + 1, min(start_idx + 5000, len(lines))):
-        if _RE_END.match(lines[i]) and len(lines[i]) < 80:
-            end_idx = i
-            break
+    # For each start heading take the next end heading (or a bounded fallback),
+    # and keep the longest resulting span -- that is the real section, not a TOC
+    # row whose own end heading is only a line or two away.
+    best_start, best_end, best_chars = 0, 0, 0
+    for s in starts:
+        following = [e for e in ends if e > s]
+        e = following[0] if following else min(s + 3000, len(lines))
+        chars = sum(len(lines[k]) + 1 for k in range(s, e))
+        if chars > best_chars:
+            best_start, best_end, best_chars = s, e, chars
 
-    end = end_idx if end_idx else min(start_idx + 3000, len(lines))
-    section_lines = lines[start_idx:end]
+    if best_chars < _MIN_SECTION_CHARS:
+        return None
 
-    # Collapse runs of identical short lines (e.g. repeated page separators)
+    # Tidy whitespace: drop blanks, collapse repeated short lines (page
+    # separators, repeated running headers).
     cleaned: list[str] = []
-    for l in section_lines:
+    for l in lines[best_start:best_end]:
+        if not l:
+            continue
         if cleaned and l == cleaned[-1] and len(l) < 20:
             continue
         cleaned.append(l)
 
-    text = "\n\n".join(cleaned)
+    text_out = "\n\n".join(cleaned)
 
     # Cap at ~12 000 words to keep markdown files manageable
-    words = text.split()
+    words = text_out.split()
     if len(words) > 12_000:
-        text = (
+        text_out = (
             " ".join(words[:12_000])
-            + "\n\n*[Truncated — showing first 12 000 words of Item 1A Risk Factors.]*"
+            + "\n\n*[Truncated -- showing first 12 000 words of Item 1A Risk Factors.]*"
         )
 
-    return text if text.strip() else None
+    return text_out if text_out.strip() else None
 
 
 # ── public API ─────────────────────────────────────────────────────────────────

@@ -48,8 +48,8 @@ DOCUMENTS_DIR = _PROJECT_ROOT / "data" / "documents"
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Qdrant configuration ──────────────────────────────────────────────────────
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
-QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY") or None
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333").strip()
+QDRANT_API_KEY = (os.environ.get("QDRANT_API_KEY") or "").strip() or None
 COLLECTION_NAME = (
     os.environ.get("QDRANT_COLLECTION_NAME")
     or os.environ.get("QDRANT_COLLECTION")
@@ -264,6 +264,72 @@ def ingest_ticker_risk_factors(ticker: str) -> dict:
     print(f"[Qdrant] Done — {len(points)} vectors upserted for {t}.")
 
     return {"success": True, "ticker": t, "chunks_ingested": len(points), "error": None}
+
+
+# ── On-demand background ingestion ───────────────────────────────────────────
+# When a portfolio analysis asks for a ticker that has no evidence in Qdrant yet,
+# we kick off extract+ingest in a daemon thread so the request returns instantly.
+# The result lands in Qdrant (durable), so the *next* analysis of that ticker
+# finds it. State is process-local: dedupe in-flight work, and back off on
+# tickers that have no usable 10-K (e.g. ETFs, foreign issuers) so we don't
+# re-attempt them on every request.
+
+import time as _time
+
+_inflight_ingest: "set[str]" = set()
+_failed_ingest: "dict[str, float]" = {}
+_ingest_state_lock = threading.Lock()
+_FAILED_RETRY_AFTER = 6 * 3600                      # seconds before retrying a failure
+_ingest_semaphore = threading.BoundedSemaphore(2)   # cap concurrent embeds (RAM)
+
+
+def _run_ingest(ticker: str) -> None:
+    acquired = _ingest_semaphore.acquire(timeout=120)
+    if not acquired:
+        with _ingest_state_lock:
+            _inflight_ingest.discard(ticker)        # let a later request retry
+        return
+    try:
+        from providers.sec_risk_factors import extract_risk_factors
+
+        ex = extract_risk_factors(ticker)
+        ok = bool(ex.get("success"))
+        if ok:
+            ok = bool(ingest_ticker_risk_factors(ticker).get("success"))
+        with _ingest_state_lock:
+            if ok:
+                _failed_ingest.pop(ticker, None)
+            else:
+                _failed_ingest[ticker] = _time.time()
+    except Exception as exc:
+        print(f"[Qdrant] background ingest failed for {ticker}: {exc}")
+        with _ingest_state_lock:
+            _failed_ingest[ticker] = _time.time()
+    finally:
+        _ingest_semaphore.release()
+        with _ingest_state_lock:
+            _inflight_ingest.discard(ticker)
+
+
+def trigger_background_ingest(ticker: str) -> str:
+    """
+    Start extract+ingest for *ticker* in a daemon thread, deduped and rate-limited.
+
+    Returns one of:
+      "in_progress"     — already being ingested right now
+      "recently_failed" — failed within the last _FAILED_RETRY_AFTER window
+      "queued"          — a fresh background ingest was started
+    """
+    t = ticker.upper().strip()
+    with _ingest_state_lock:
+        if t in _inflight_ingest:
+            return "in_progress"
+        last = _failed_ingest.get(t)
+        if last is not None and (_time.time() - last) < _FAILED_RETRY_AFTER:
+            return "recently_failed"
+        _inflight_ingest.add(t)
+    threading.Thread(target=_run_ingest, args=(t,), daemon=True).start()
+    return "queued"
 
 
 def retrieve_company_risks(

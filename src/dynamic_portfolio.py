@@ -517,12 +517,23 @@ def compute_company_risk_evidence(
             hits = qdrant_ingestion.retrieve_company_risks(
                 query=query, tickers=[ticker], top_k=top_k
             )
-            return ticker, hits if hits else {
-                "message": (
-                    f"No company risk evidence available yet for {ticker}. "
-                    "Run SEC extraction and Qdrant ingestion for this ticker first."
+            if hits:
+                return ticker, hits
+
+            # No evidence yet — kick off background extract+ingest so the next
+            # analysis of this ticker finds it. Returns instantly.
+            status = qdrant_ingestion.trigger_background_ingest(ticker)
+            if status == "recently_failed":
+                msg = (
+                    f"No SEC 10-K risk factors are available for {ticker} "
+                    "(no filing found, or extraction failed)."
                 )
-            }
+            else:
+                msg = (
+                    f"Preparing SEC risk evidence for {ticker} in the background — "
+                    "re-run the analysis in ~30–60s to see it."
+                )
+            return ticker, {"message": msg}
         except Exception as exc:
             return ticker, {"message": f"Qdrant query failed for {ticker}: {exc}"}
 

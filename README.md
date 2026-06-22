@@ -228,7 +228,7 @@ Railway's ephemeral filesystem across restarts/redeploys.
 - **Fixed stress windows** — COVID Crash and 2022 Rate-Hike Selloff only; no automatic drawdown detection.
 - **Factor regression proxy quality** — SPY, QQQ, TLT are accessible but imprecise proxies. TLT captures duration/rate-regime dynamics directionally, not 10Y Treasury yield changes directly. SPY and QQQ are highly correlated, which can distort individual betas.
 - **Style classification** — rule-based heuristics, not a statistical factor model.
-- **SEC evidence** — only tickers with ingested 10-K filings in Qdrant return company risk evidence. Run `/sec-risk-factors/{ticker}` and `/ingest-risk-factors/{ticker}` to add coverage.
+- **SEC evidence** — risk evidence comes from 10-K filings ingested into Qdrant. ~74 common large-cap tickers are pre-ingested (see `data/universe.txt` + `scripts/bulk_ingest.py`). Any other ticker is **ingested on demand**: the first analysis that references it triggers a background extract+ingest and shows a "preparing…" note; re-running the analysis ~30–60s later surfaces the evidence (it is then cached in Qdrant permanently). A ticker yields no evidence only when its 10-K has no machine-locatable Item 1A section (some filing layouts) or it has no 10-K at all (ETFs, foreign issuers).
 - **Demo ticker coverage** — pre-built returns cover AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, SPY, QQQ, TLT. Other tickers are fetched live (Tiingo → Alpha Vantage → yfinance) and cached in `provider_cache`. A ticker only fails when it is delisted/invalid (no source has data) or all live sources are simultaneously rate-limited on a cold, un-cached request.
 
 ---

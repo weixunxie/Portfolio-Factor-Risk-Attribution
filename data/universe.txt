@@ -1,0 +1,102 @@
+# Pre-ingest universe — common large-cap tickers for SEC risk evidence.
+# One ticker per line. Lines starting with # and blank lines are ignored.
+# scripts/bulk_ingest.py reads this file and ingests each ticker's 10-K
+# risk factors into Qdrant (via the deployed backend). Idempotent: tickers
+# that already have evidence are skipped.
+#
+# ETFs are intentionally excluded — they have no 10-K risk factors.
+
+# ── Mega-cap tech / communication ──
+AAPL
+MSFT
+NVDA
+GOOGL
+AMZN
+META
+TSLA
+AVGO
+ORCL
+CRM
+ADBE
+AMD
+INTC
+CSCO
+QCOM
+TXN
+INTU
+IBM
+NOW
+AMAT
+MU
+NFLX
+DIS
+CMCSA
+T
+VZ
+TMUS
+
+# ── Consumer ──
+HD
+MCD
+NKE
+SBUX
+LOW
+TJX
+BKNG
+COST
+WMT
+PG
+KO
+PEP
+PM
+MO
+MDLZ
+CL
+
+# ── Financials ──
+JPM
+BAC
+WFC
+GS
+MS
+C
+BLK
+SPGI
+AXP
+SCHW
+V
+MA
+PYPL
+
+# ── Health care ──
+UNH
+JNJ
+LLY
+PFE
+MRK
+ABBV
+TMO
+ABT
+DHR
+BMY
+AMGN
+CVS
+MDT
+
+# ── Industrials ──
+BA
+CAT
+GE
+HON
+UPS
+RTX
+LMT
+DE
+UNP
+MMM
+
+# ── Energy ──
+XOM
+CVX
+COP
+SLB
