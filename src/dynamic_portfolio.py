@@ -112,7 +112,42 @@ def _load_from_price_cache(ticker: str) -> pd.Series | None:
         return None
 
 
-# ── Priority-3: Alpha Vantage ─────────────────────────────────────────────────
+# ── Priority-3: Tiingo (primary live source — large free quota, adj. close) ───
+
+def _load_from_tiingo(ticker: str) -> pd.Series | None:
+    """
+    Fetch adjusted-close prices from Tiingo (honours its own cache).
+    Free tier returns full history (~2018+) with a ~1000 calls/day quota.
+    Returns None on any error.
+    """
+    try:
+        from providers.tiingo_provider import get_daily_prices
+
+        res = get_daily_prices(ticker)
+        if not res.get("success"):
+            return None
+
+        bars = res["data"]
+        if not bars:
+            return None
+
+        # Each bar: {"date": "2018-01-02T00:00:00.000Z", "adjClose": .., "close": ..}
+        s = pd.Series(
+            {bar["date"]: float(bar.get("adjClose", bar["close"])) for bar in bars},
+            dtype=float,
+        )
+        s.index = pd.to_datetime(s.index).tz_localize(None)
+        s = s.sort_index().dropna()
+        s.name = ticker
+
+        label = "cached Tiingo" if res.get("cached") else "Tiingo"
+        print(f"[DataSource] {ticker}: using {label} ({len(s)} days)")
+        return s
+    except Exception:
+        return None
+
+
+# ── Priority-4: Alpha Vantage ─────────────────────────────────────────────────
 
 def _load_from_alpha_vantage(ticker: str) -> pd.Series | None:
     """
@@ -195,26 +230,21 @@ def _load_from_yfinance(ticker: str) -> pd.Series | None:
 def get_latest_price(ticker: str) -> float | None:
     """
     Return the most recent closing price for *ticker* from any available source.
-    Tries the price cache, then Alpha Vantage, then yfinance.
+    Tries the price cache, then Tiingo, then Alpha Vantage, then yfinance.
     Returns None if all sources fail or the ticker is CASH.
     """
     if ticker == CASH_TICKER:
         return None
 
-    # Try price cache
-    prices = _load_from_price_cache(ticker)
-    if prices is not None and not prices.empty:
-        return float(prices.iloc[-1])
-
-    # Try Alpha Vantage
-    prices = _load_from_alpha_vantage(ticker)
-    if prices is not None and not prices.empty:
-        return float(prices.iloc[-1])
-
-    # Try yfinance
-    prices = _load_from_yfinance(ticker)
-    if prices is not None and not prices.empty:
-        return float(prices.iloc[-1])
+    for loader in (
+        _load_from_price_cache,
+        _load_from_tiingo,
+        _load_from_alpha_vantage,
+        _load_from_yfinance,
+    ):
+        prices = loader(ticker)
+        if prices is not None and not prices.empty:
+            return float(prices.iloc[-1])
 
     return None
 
@@ -223,24 +253,21 @@ def get_latest_price(ticker: str) -> float | None:
 
 def _load_ticker_returns(ticker: str) -> tuple[pd.Series | None, str]:
     """
-    Try to obtain daily returns for *ticker* using priority order 2→3→4.
+    Try to obtain daily returns for *ticker* using priority order 2→3→4→5:
+    price cache → Tiingo → Alpha Vantage → yfinance.
 
     Returns (returns_series, source_label) or (None, "failed").
     """
-    # Priority 2
-    prices = _load_from_price_cache(ticker)
-    if prices is not None and not prices.empty:
-        return prices.pct_change().dropna().rename(ticker), "price_cache"
-
-    # Priority 3
-    prices = _load_from_alpha_vantage(ticker)
-    if prices is not None and not prices.empty:
-        return prices.pct_change().dropna().rename(ticker), "alpha_vantage"
-
-    # Priority 4
-    prices = _load_from_yfinance(ticker)
-    if prices is not None and not prices.empty:
-        return prices.pct_change().dropna().rename(ticker), "yfinance"
+    sources = (
+        (_load_from_price_cache,   "price_cache"),
+        (_load_from_tiingo,        "tiingo"),
+        (_load_from_alpha_vantage, "alpha_vantage"),
+        (_load_from_yfinance,      "yfinance"),
+    )
+    for loader, label in sources:
+        prices = loader(ticker)
+        if prices is not None and not prices.empty:
+            return prices.pct_change().dropna().rename(ticker), label
 
     print(f"[DataSource] {ticker}: all sources failed — excluding from analysis")
     return None, "failed"

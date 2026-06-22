@@ -105,15 +105,40 @@ not to provide investment advice or predictions.
 | Source | What it provides | API key required |
 |---|---|---|
 | `data/processed/` | Pre-built daily returns for 10 demo tickers (2018–present) | No |
-| Alpha Vantage | Live company profiles, sector data, recent price history | Yes (`ALPHA_VANTAGE_API_KEY`) |
-| yfinance | Price history and company profile fallback | No |
+| Tiingo | **Primary** live price history — adjusted close, full history back to 2018, ~1000 calls/day free | Yes (`TIINGO_API_KEY`) |
+| Alpha Vantage | Company profiles, sector data; fallback price history (free tier: 25 calls/day) | Yes (`ALPHA_VANTAGE_API_KEY`) |
+| yfinance | Last-resort price/profile fallback (rate-limited on datacenter IPs) | No |
 | SEC EDGAR | 10-K filing metadata and CIK lookup | No (user-agent required) |
 | Qdrant Cloud | Vector store for 10-K risk factor chunks | Yes (`QDRANT_API_KEY`) |
 | OpenAI | AI risk report narration | Yes (`OPENAI_API_KEY`) |
-| PostgreSQL / Supabase | Portfolio and analysis snapshot persistence | Yes (`DATABASE_URL`) |
+| PostgreSQL / Supabase | Portfolio/analysis persistence **+ durable provider cache (`provider_cache`)** | Yes (`DATABASE_URL`) |
 
 The static fallback map in `src/providers/security_metadata.py` covers all ten demo tickers
 and ~50 common ETFs, so sector and security-type resolution works offline for those tickers.
+
+### Price-data resolution & caching
+
+For any ticker, price history is resolved through this priority chain
+(`src/dynamic_portfolio.py`):
+
+1. **`data/processed/returns.csv`** — the 10 demo tickers, always available offline.
+2. **Durable cache** (`provider_cache` table) — any series fetched on a previous run.
+3. **Tiingo** — primary live source.
+4. **Alpha Vantage** — fallback.
+5. **yfinance** — last resort.
+
+Every successful live fetch is written to a two-tier cache
+(`src/providers/cache.py`): a local file under `data/cache/` **and** the
+`provider_cache` Postgres table. The Postgres tier matters because Railway's
+filesystem is ephemeral — without it, the file cache is wiped on every
+restart/redeploy and non-demo tickers must be re-fetched on every cold
+container, which fails whenever the live APIs are rate-limited or blocked.
+Apply the table once via `db/migrations/001_provider_cache.sql` (Supabase SQL
+Editor). If `DATABASE_URL` is absent the cache transparently degrades to
+file-only.
+
+The `GET /cache/health` endpoint reports the state of all of this:
+`{ tiingo_key_set, alpha_vantage_key_set, database_configured, cache_persistence }`.
 
 ---
 
@@ -128,7 +153,7 @@ and ~50 common ETFs, so sector and security-type resolution works offline for th
 | Vector retrieval | Qdrant Cloud |
 | Embeddings | sentence-transformers (local) |
 | SEC filings | SEC EDGAR REST API (no key required) |
-| Market data | Alpha Vantage API + yfinance fallback |
+| Market data | Tiingo (primary) → Alpha Vantage → yfinance, with a Postgres-backed durable cache |
 | AI narration | OpenAI Chat Completions API |
 
 ---
@@ -148,10 +173,12 @@ pip install -r requirements.txt
 Copy `.env.example` to `.env` and fill in the values you have. At minimum for local use:
 
 ```
-ALPHA_VANTAGE_API_KEY=your_key   # optional: enables live company profiles
+TIINGO_API_KEY=your_key          # primary price source for non-demo tickers
+ALPHA_VANTAGE_API_KEY=your_key   # optional: company profiles + fallback prices
 OPENAI_API_KEY=your_key          # optional: enables AI risk report
 SEC_USER_AGENT=YourName your@email.com
-# DATABASE_URL and QDRANT_* are optional for local testing
+# DATABASE_URL enables the durable provider cache; QDRANT_* enables SEC evidence.
+# Both are optional for local testing (cache degrades to file-only without DATABASE_URL).
 ```
 
 ### 3. Start the backend
@@ -184,6 +211,13 @@ Set `FRONTEND_ORIGIN` on the Railway backend to your Vercel URL so CORS allows r
 deployed frontend. Never expose backend secrets (`DATABASE_URL`, `OPENAI_API_KEY`, etc.) in
 Vercel environment variables.
 
+**Railway backend variables** to set: `TIINGO_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `DATABASE_URL`,
+`OPENAI_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, `SEC_USER_AGENT`, `FRONTEND_ORIGIN`. Paste keys
+with no surrounding whitespace. After deploy, hit `GET /cache/health` to confirm
+`tiingo_key_set`, `database_configured`, and `cache_persistence` are all `true`. Run the
+`db/migrations/001_provider_cache.sql` migration once in Supabase so the durable cache survives
+Railway's ephemeral filesystem across restarts/redeploys.
+
 ---
 
 ## Current Limitations
@@ -195,7 +229,7 @@ Vercel environment variables.
 - **Factor regression proxy quality** — SPY, QQQ, TLT are accessible but imprecise proxies. TLT captures duration/rate-regime dynamics directionally, not 10Y Treasury yield changes directly. SPY and QQQ are highly correlated, which can distort individual betas.
 - **Style classification** — rule-based heuristics, not a statistical factor model.
 - **SEC evidence** — only tickers with ingested 10-K filings in Qdrant return company risk evidence. Run `/sec-risk-factors/{ticker}` and `/ingest-risk-factors/{ticker}` to add coverage.
-- **Demo ticker coverage** — pre-built returns cover AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, SPY, QQQ, TLT. Other tickers fall back to live API fetches (Alpha Vantage or yfinance).
+- **Demo ticker coverage** — pre-built returns cover AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA, SPY, QQQ, TLT. Other tickers are fetched live (Tiingo → Alpha Vantage → yfinance) and cached in `provider_cache`. A ticker only fails when it is delisted/invalid (no source has data) or all live sources are simultaneously rate-limited on a cold, un-cached request.
 
 ---
 

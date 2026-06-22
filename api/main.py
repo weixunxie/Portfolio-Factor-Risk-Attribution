@@ -162,6 +162,7 @@ def cache_health():
     import providers.cache_db as _cache_db
 
     return {
+        "tiingo_key_set":        bool(os.environ.get("TIINGO_API_KEY", "").strip()),
         "alpha_vantage_key_set": bool(os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()),
         "database_configured":   _db.is_configured(),
         "cache_persistence":     _cache_db.available(),

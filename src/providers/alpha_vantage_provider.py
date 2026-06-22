@@ -31,7 +31,8 @@ _REQUEST_TIMEOUT = 12        # seconds
 
 
 def _api_key() -> str | None:
-    return os.environ.get("ALPHA_VANTAGE_API_KEY")
+    key = os.environ.get("ALPHA_VANTAGE_API_KEY")
+    return key.strip() if key else None
 
 
 def _ok(data: Any, *, cached: bool = False) -> dict:
