@@ -228,6 +228,13 @@ export const generateRiskSummary = (result: AnalyzePortfolioResponse) =>
 export const warmupBackend = () =>
   fetch(`${API_BASE}/health`).catch(() => {});
 
+// Poll just the SEC evidence section while on-demand ingestion runs in the
+// background, so the UI can refresh that block without re-running the analysis.
+export const fetchEvidenceLive = (tickers: string[]) =>
+  get<{ company_risk_evidence: Record<string, RiskEvidenceEntry> }>(
+    `/company-risk-evidence-live?tickers=${encodeURIComponent(tickers.join(","))}`
+  );
+
 // Static endpoints kept for backward compatibility
 export interface MarkdownResponse {
   markdown: string;

@@ -194,6 +194,42 @@ def company_risk_evidence():
     return {"markdown": _read_markdown(OUTPUTS / "company_risk_evidence.md")}
 
 
+@app.get("/company-risk-evidence-live")
+def company_risk_evidence_live(tickers: str = Query(..., description="comma-separated tickers")):
+    """
+    Lightweight evidence lookup for the frontend to poll while on-demand
+    ingestion runs in the background. Returns the same shape as the
+    company_risk_evidence field of /analyze-portfolio, so the UI can refresh
+    just that section without re-running the whole analysis.
+    """
+    import qdrant_ingestion
+
+    wanted = [t.strip().upper() for t in tickers.split(",") if t.strip()][:8]
+    out: dict = {}
+    for t in wanted:
+        try:
+            hits = qdrant_ingestion.retrieve_company_risks(
+                query="key business risks revenue concentration regulatory",
+                tickers=[t],
+                top_k=3,
+            )
+            if hits:
+                out[t] = hits
+            else:
+                status = qdrant_ingestion.trigger_background_ingest(t)
+                out[t] = {
+                    "message": (
+                        f"No SEC 10-K risk factors are available for {t} "
+                        "(no filing found, or extraction failed)."
+                        if status == "recently_failed"
+                        else f"Preparing SEC risk evidence for {t} in the background…"
+                    )
+                }
+        except Exception as exc:
+            out[t] = {"message": f"Qdrant query failed for {t}: {exc}"}
+    return {"company_risk_evidence": out}
+
+
 @app.get("/risk-memo")
 def risk_memo():
     return {"markdown": _read_markdown(OUTPUTS / "sample_memo.md")}

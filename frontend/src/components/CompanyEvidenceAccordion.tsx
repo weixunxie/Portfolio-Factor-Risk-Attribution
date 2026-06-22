@@ -1,10 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import type { RiskEvidenceEntry, RiskEvidenceHit } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { fetchEvidenceLive, type RiskEvidenceEntry, type RiskEvidenceHit } from "@/lib/api";
 
 function isHitArray(e: RiskEvidenceEntry): e is RiskEvidenceHit[] {
   return Array.isArray(e);
+}
+
+function isPreparing(e: RiskEvidenceEntry): boolean {
+  return !isHitArray(e) && /preparing/i.test((e as { message: string }).message ?? "");
 }
 
 function TickerPanel({ ticker, entry }: { ticker: string; entry: RiskEvidenceEntry }) {
@@ -13,9 +17,10 @@ function TickerPanel({ ticker, entry }: { ticker: string; entry: RiskEvidenceEnt
   const noData = !hits || hits.length === 0;
   const message = !hits ? (entry as { message: string }).message : null;
 
+  const preparing = isPreparing(entry);
   const summary = hits && hits.length > 0
     ? `${hits.length} excerpt${hits.length !== 1 ? "s" : ""}`
-    : message ?? "No results";
+    : (preparing ? "⏳ " : "") + (message ?? "No results");
 
   return (
     <div
@@ -94,7 +99,44 @@ export default function CompanyEvidenceAccordion({
 }: {
   evidence: Record<string, RiskEvidenceEntry>;
 }) {
-  const tickers = Object.keys(evidence);
+  const [live, setLive] = useState(evidence);
+
+  // Reset whenever a new analysis arrives.
+  useEffect(() => {
+    setLive(evidence);
+  }, [evidence]);
+
+  // While any ticker is still "preparing" (background ingestion running), poll
+  // the evidence endpoint and refresh just those entries in place — no need to
+  // re-run the whole analysis. The dependency is the sorted set of preparing
+  // tickers, so the interval is rebuilt only when that set actually changes and
+  // stops once every ticker has resolved.
+  const preparingKey = Object.entries(live)
+    .filter(([, e]) => isPreparing(e))
+    .map(([t]) => t)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (!preparingKey) return;
+    const tickers = preparingKey.split(",");
+    const startedAt = Date.now();
+    const id = setInterval(async () => {
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        clearInterval(id);
+        return;
+      }
+      try {
+        const res = await fetchEvidenceLive(tickers);
+        setLive((prev) => ({ ...prev, ...res.company_risk_evidence }));
+      } catch {
+        /* transient — keep polling */
+      }
+    }, 15000);
+    return () => clearInterval(id);
+  }, [preparingKey]);
+
+  const tickers = Object.keys(live);
 
   if (tickers.length === 0) {
     return (
@@ -114,7 +156,7 @@ export default function CompanyEvidenceAccordion({
       }}
     >
       {tickers.map((ticker) => (
-        <TickerPanel key={ticker} ticker={ticker} entry={evidence[ticker]} />
+        <TickerPanel key={ticker} ticker={ticker} entry={live[ticker]} />
       ))}
     </div>
   );
