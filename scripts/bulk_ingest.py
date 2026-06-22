@@ -62,7 +62,14 @@ def already_ingested(base: str, ticker: str, timeout: int) -> bool:
 def ingest_one(base: str, ticker: str, timeout: int) -> tuple[str, str]:
     """Returns (status, detail). status in {ok, skipped, extract_failed, ingest_failed, error}."""
     try:
-        ex = requests.get(f"{base}/sec-risk-factors/{ticker}", timeout=timeout)
+        # force=true re-downloads and rewrites the markdown file. The backend's
+        # filesystem is ephemeral, so a cached extract may have no file on disk
+        # for the ingest step to read — forcing guarantees the file exists.
+        ex = requests.get(
+            f"{base}/sec-risk-factors/{ticker}",
+            params={"force": "true"},
+            timeout=timeout,
+        )
         if ex.status_code != 200:
             return "extract_failed", f"HTTP {ex.status_code}: {ex.text[:120]}"
         if not ex.json().get("success"):

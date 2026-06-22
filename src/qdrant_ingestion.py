@@ -215,15 +215,23 @@ def ingest_ticker_risk_factors(ticker: str) -> dict:
     md_path = DOCUMENTS_DIR / t / "10k_risk_factors.md"
 
     if not md_path.exists():
-        return {
-            "success": False,
-            "ticker": t,
-            "chunks_ingested": 0,
-            "error": (
-                f"No risk factors file found at {md_path}. "
-                f"Run GET /sec-risk-factors/{t} first to extract it from SEC EDGAR."
-            ),
-        }
+        # The extracted markdown lives on an ephemeral filesystem (Railway wipes
+        # it on restart), so a previously-extracted ticker may have no file on
+        # disk. Re-extract from SEC EDGAR so ingestion is self-sufficient and
+        # does not depend on a prior /sec-risk-factors call in the same container.
+        from providers.sec_risk_factors import extract_risk_factors
+
+        ex = extract_risk_factors(t, force=True)
+        if not ex.get("success") or not md_path.exists():
+            return {
+                "success": False,
+                "ticker": t,
+                "chunks_ingested": 0,
+                "error": (
+                    ex.get("error")
+                    or f"No risk factors file found at {md_path} and re-extraction failed."
+                ),
+            }
 
     full_text = md_path.read_text(encoding="utf-8")
     meta, body = _parse_frontmatter(full_text)
